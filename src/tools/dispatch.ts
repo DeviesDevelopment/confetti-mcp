@@ -3,6 +3,14 @@ import type { GeneratedTool } from './definitions.js'
 
 export const DEFAULT_PAGE_SIZE = 25
 
+/**
+ * Upper bound on a caller-supplied page size. `pageOptionsSchema` upstream has
+ * no `.max()`, so without this one `findAll` with `page.size: 1000000` buffers,
+ * denormalises and re-serialises an unbounded response on a shared process.
+ * The public API tops out well below this, so a legitimate call never notices.
+ */
+export const MAX_PAGE_SIZE = 100
+
 export interface CallContext {
   apiKey: string
   apiHost?: string
@@ -49,8 +57,27 @@ function requireId(args: AnyArgs): string {
   return asString
 }
 
-function withDefaultPage(page: unknown): AnyArgs {
-  const provided = typeof page === 'object' && page !== null ? (page as AnyArgs) : {}
+function clamped(value: unknown): unknown {
+  return typeof value === 'number' && value > MAX_PAGE_SIZE ? MAX_PAGE_SIZE : value
+}
+
+/**
+ * A non-object `page` used to be swallowed and replaced with the default, so
+ * `page: 2` quietly returned page 1 — the model then loops over the same
+ * records or concludes they do not exist. It is now an error naming the shape,
+ * and caller-supplied sizes are clamped so one call cannot amplify into an
+ * unbounded response on a shared process.
+ */
+function pageOption(page: unknown): AnyArgs {
+  if (page === undefined) return { size: DEFAULT_PAGE_SIZE }
+  if (typeof page !== 'object' || page === null || Array.isArray(page)) {
+    throw parameterError(
+      `page must be an object such as {"number": 2, "size": ${DEFAULT_PAGE_SIZE}} — got ${JSON.stringify(page) ?? typeof page}. Use page.number for the page you want.`,
+    )
+  }
+  const provided = { ...(page as AnyArgs) }
+  if ('size' in provided) provided['size'] = clamped(provided['size'])
+  if ('limit' in provided) provided['limit'] = clamped(provided['limit'])
   return { size: DEFAULT_PAGE_SIZE, ...provided }
 }
 
@@ -115,7 +142,7 @@ export async function callTool(
   switch (tool.operation) {
     case 'findAll': {
       const caller = callerOptions('findAll', args)
-      caller['page'] = withDefaultPage(args['page'])
+      caller['page'] = pageOption(args['page'])
       return resource['findAll']!({ ...caller, ...options })
     }
     case 'find': {

@@ -2,7 +2,12 @@ import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import nock from 'nock'
 import { buildTools } from '../../src/tools/definitions.js'
-import { callTool, callerOptions, DEFAULT_PAGE_SIZE } from '../../src/tools/dispatch.js'
+import {
+  callTool,
+  callerOptions,
+  DEFAULT_PAGE_SIZE,
+  MAX_PAGE_SIZE,
+} from '../../src/tools/dispatch.js'
 
 const API = 'https://api.confetti.events'
 const tools = new Map(buildTools().map((t) => [t.definition.name, t]))
@@ -45,6 +50,58 @@ test('an explicit page size overrides the default', async () => {
     .reply(200, { data: [] }, { 'content-type': 'application/json' })
 
   await callTool(tool('confetti_events_find_all'), { page: { size: 100 } }, context)
+  scope.done()
+})
+
+test('a non-object page is rejected instead of silently returning page 1', async () => {
+  // The worst pagination failure mode: the model asks for page 2 and gets
+  // page 1 with no signal, so it loops re-fetching the same records.
+  const scope = nock(API).get('/events').query(true).reply(200, { data: [] }, {
+    'content-type': 'application/json',
+  })
+
+  for (const page of [2, '2', 'second', [], null]) {
+    await assert.rejects(
+      () => callTool(tool('confetti_events_find_all'), { page }, context),
+      (error: Error) => {
+        assert.equal(error.name, 'ParameterError')
+        assert.match(error.message, /page/)
+        return true
+      },
+      `page ${JSON.stringify(page)} must be rejected`,
+    )
+  }
+
+  assert.equal(scope.isDone(), false, 'a malformed page must not reach the API')
+})
+
+test('an oversized page size is clamped', async () => {
+  const scope = nock(API)
+    .get('/events')
+    .query((q) => q['page[size]'] === String(MAX_PAGE_SIZE))
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  await callTool(tool('confetti_events_find_all'), { page: { size: 1000000 } }, context)
+  scope.done()
+})
+
+test('an oversized page limit is clamped', async () => {
+  const scope = nock(API)
+    .get('/events')
+    .query((q) => q['page[limit]'] === String(MAX_PAGE_SIZE))
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  await callTool(tool('confetti_events_find_all'), { page: { limit: 1000000 } }, context)
+  scope.done()
+})
+
+test('a page number and size within bounds pass through untouched', async () => {
+  const scope = nock(API)
+    .get('/events')
+    .query((q) => q['page[number]'] === '3' && q['page[size]'] === '10')
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  await callTool(tool('confetti_events_find_all'), { page: { number: 3, size: 10 } }, context)
   scope.done()
 })
 
