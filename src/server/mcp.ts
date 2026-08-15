@@ -1,3 +1,4 @@
+import { createRequire } from 'node:module'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import { buildTools, type GeneratedTool } from '../tools/definitions.js'
@@ -5,8 +6,11 @@ import { parseToolFilter, selectTools, toolSetCacheKey } from '../tools/filter.j
 import { callTool, type CallContext } from '../tools/dispatch.js'
 import { toolErrorMessage } from '../tools/errors.js'
 
+const require = createRequire(import.meta.url)
+const pkg = require('../../package.json') as { version: string }
+
 export const SERVER_NAME = 'confetti-mcp'
-export const SERVER_VERSION = '0.1.0'
+export const SERVER_VERSION = pkg.version
 
 /** All 63 tools, generated once. Definition building walks every Zod schema. */
 const ALL_TOOLS = buildTools()

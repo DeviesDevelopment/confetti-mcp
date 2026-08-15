@@ -33,3 +33,14 @@ test('loadConfig reads overrides from env', () => {
   assert.equal(config.port, 3000)
   assert.equal(config.apiHost, 'staging.confetti.events')
 })
+
+test('an empty PORT falls back to the default rather than binding a random port', () => {
+  assert.equal(loadConfig({ PORT: '' }).port, 8080)
+  assert.equal(loadConfig({ PORT: '   ' }).port, 8080)
+})
+
+test('an invalid PORT is rejected loudly', () => {
+  assert.throws(() => loadConfig({ PORT: 'abc' }), /Invalid PORT/)
+  assert.throws(() => loadConfig({ PORT: '0' }), /Invalid PORT/)
+  assert.throws(() => loadConfig({ PORT: '99999' }), /Invalid PORT/)
+})
