@@ -71,9 +71,15 @@ instance (Sentry, Cal.com, PostHog, Supabase all split this way).
 
 TypeScript, ESM, Node 22 LTS. Dependencies:
 
-- `@modelcontextprotocol/sdk` — `StreamableHTTPServerTransport` in stateless mode
-- `express` — HTTP layer
+- `@modelcontextprotocol/sdk` 1.30.0 — `StreamableHTTPServerTransport` in stateless mode
+- `express` 5.2.1 — HTTP layer
 - `confetti` — `^4.1.5`, the API client
+
+The SDK's high-level `McpServer.registerTool` accepts Zod schemas only
+(`AnySchema = z3.ZodTypeAny | z4.$ZodType`). Because tools here are generated as
+JSON Schema, the server uses the **low-level `Server`** class with
+`setRequestHandler(ListToolsRequestSchema, …)` and `CallToolRequestSchema`, which
+takes raw JSON Schema directly — the wire format wants exactly that.
 
 Stateless mode means `sessionIdGenerator: undefined`: a fresh `McpServer` and
 transport are constructed per request. This matters for correctness, not just
@@ -161,8 +167,18 @@ rename upstream then breaks the build instead of dropping tools.
 | --- | --- |
 | `find_all` | `filter` from `model.filters` via `filterToJsonSchema`; `sort` as an enum from `model.sorting`; `include` as an enum array from `model.includes`; `page` |
 | `find` | `id`, `include` |
-| `create` / `update` | from `model.operations.{create,update}.schema` via `schemaToJsonSchema`, with relationship fields stripped; `update` also takes `id` |
+| `create` / `update` | from `model.operations.{create,update}.schema` via `schemaToJsonSchema`, unstripped; `update` also takes `id` |
 | `delete` | `id` |
+
+Relationship fields are **not** stripped, despite `schemaToJsonSchema` offering
+a `stripFields` option. `EventCreateSchema` carries `workspaceId`, and
+`event.relationships` names it — stripping would make it impossible to say which
+workspace a new event belongs to. That option exists for Confetti's own form
+rendering, not for an API surface.
+
+`sort`, `filter`, and `include` are emitted **conditionally**. Only `ticket` has
+non-empty `sorting`; 10 of 18 models have no filters and 13 have no includes.
+Emitting empty enums would advertise capabilities the API does not have.
 
 **Descriptions** embed `model.sample.single.formatted` so the model sees a real
 payload shape rather than only a schema.
