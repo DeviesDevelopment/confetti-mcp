@@ -36,6 +36,22 @@ function withoutId(args: AnyArgs): AnyArgs {
   return rest
 }
 
+/**
+ * Keys that control the upstream connection itself. They are never accepted
+ * from tool arguments: `findAll` and `find` merge caller args and connection
+ * options into one object, so without this a caller could set apiHost and
+ * redirect the request — with the real API key attached — to a host of their
+ * choosing. Spread order alone is not enough, because CallContext permits
+ * apiHost/apiProtocol to be absent.
+ */
+const RESERVED_OPTION_KEYS = ['apiKey', 'apiHost', 'apiProtocol', 'raw'] as const
+
+function stripReserved(args: AnyArgs): AnyArgs {
+  const clean = { ...args }
+  for (const key of RESERVED_OPTION_KEYS) delete clean[key]
+  return clean
+}
+
 export async function callTool(
   tool: GeneratedTool,
   args: AnyArgs,
@@ -49,12 +65,12 @@ export async function callTool(
 
   switch (tool.operation) {
     case 'findAll': {
-      const { page, ...rest } = args
+      const { page, ...rest } = stripReserved(args)
       return resource['findAll']!({ ...rest, page: withDefaultPage(page), ...options })
     }
     case 'find': {
       const id = requireId(args)
-      return resource['find']!(id, { ...withoutId(args), ...options })
+      return resource['find']!(id, { ...stripReserved(withoutId(args)), ...options })
     }
     case 'create': {
       return resource['create']!(args, options)

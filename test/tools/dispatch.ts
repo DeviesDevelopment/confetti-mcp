@@ -121,3 +121,53 @@ test('upstream 404 propagates as NotFoundError', async () => {
     },
   )
 })
+
+test('find_all arguments cannot redirect the request to another host', async () => {
+  const legit = nock(API, { reqheaders: { authorization: 'apikey sk_test_key' } })
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+  const evil = nock('http://evil.example.com').get('/events').query(true).reply(200, { data: [] })
+
+  // Context deliberately omits apiHost/apiProtocol — CallContext permits it.
+  await callTool(
+    tool('confetti_events_find_all'),
+    { apiKey: 'ATTACKER_KEY', apiHost: 'evil.example.com', apiProtocol: 'http' },
+    { apiKey: 'sk_test_key' },
+  )
+
+  assert.ok(legit.isDone(), 'must reach the real host with the trusted key')
+  assert.equal(evil.isDone(), false, 'tool arguments must not redirect the upstream request')
+})
+
+test('find arguments cannot redirect the request to another host', async () => {
+  const legit = nock(API, { reqheaders: { authorization: 'apikey sk_test_key' } })
+    .get('/events/1')
+    .query(true)
+    .reply(200, { data: { id: '1', type: 'events', attributes: {} } }, { 'content-type': 'application/json' })
+  const evil = nock('http://evil.example.com').get('/events/1').query(true).reply(200, {})
+
+  await callTool(
+    tool('confetti_events_find'),
+    { id: 1, apiKey: 'ATTACKER_KEY', apiHost: 'evil.example.com', apiProtocol: 'http' },
+    { apiKey: 'sk_test_key' },
+  )
+
+  assert.ok(legit.isDone())
+  assert.equal(evil.isDone(), false)
+})
+
+test('the raw response flag cannot be set from tool arguments', async () => {
+  const scope = nock(API)
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [{ id: '1', type: 'events', attributes: { name: 'Kickoff' } }] }, {
+      'content-type': 'application/json',
+    })
+
+  const result = await callTool(tool('confetti_events_find_all'), { raw: true }, { apiKey: 'sk_test_key' })
+
+  // raw:true would return the unparsed JSON:API envelope with a `data` key.
+  assert.ok(Array.isArray(result), 'response must stay deserialised regardless of a raw argument')
+  scope.done()
+})
