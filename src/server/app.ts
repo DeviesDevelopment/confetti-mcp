@@ -80,5 +80,17 @@ export function createApp(config: Config): express.Express {
   app.get('/mcp/k/:apiKey', methodNotAllowed)
   app.delete('/mcp/k/:apiKey', methodNotAllowed)
 
+  // Never echo the request URL: the /mcp/k/<key> carrier puts the caller's API
+  // key in the path, and Express's default 404 and error handlers would render
+  // it verbatim into the response body.
+  app.use((_req, res) => {
+    res.status(404).json({ jsonrpc: '2.0', error: { code: -32601, message: 'Not found. Use POST /mcp.' }, id: null })
+  })
+
+  app.use(((error, _req, res, _next) => {
+    console.error(JSON.stringify({ level: 'error', msg: 'unhandled', name: error instanceof Error ? error.name : typeof error }))
+    res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error.' }, id: null })
+  }) as express.ErrorRequestHandler)
+
   return app
 }

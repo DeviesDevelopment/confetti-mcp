@@ -116,3 +116,18 @@ test('the api key never appears in a successful response body', async () => {
 
   server.close()
 })
+
+test('the api key never appears in a 404 response body', async () => {
+  const { server, port } = await startServer()
+  for (const [method, path] of [
+    ['PATCH', '/mcp/k/sk_super_secret_value'],
+    ['POST', '/mcp/k/sk_super_secret_value/extra'],
+    ['GET', '/nonexistent/sk_super_secret_value'],
+  ] as const) {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, { method })
+    assert.equal(res.status, 404)
+    const body = await res.text()
+    assert.ok(!body.includes('sk_super_secret_value'), `${method} ${path} leaked the key: ${body}`)
+  }
+  server.close()
+})
