@@ -1645,10 +1645,38 @@ function baseOptions(context: CallContext): AnyArgs {
   }
 }
 
+/**
+ * Keys that control the upstream connection itself. They are never accepted
+ * from tool arguments: `findAll` and `find` merge caller args and connection
+ * options into one object, so without this a caller could set apiHost and
+ * redirect the request — with the real API key attached — to a host of their
+ * choosing. Spread order alone is not enough, because CallContext permits
+ * apiHost/apiProtocol to be absent, leaving nothing to overwrite the caller's
+ * value with.
+ */
+const RESERVED_OPTION_KEYS = ['apiKey', 'apiHost', 'apiProtocol', 'raw'] as const
+
+function stripReserved(args: AnyArgs): AnyArgs {
+  const clean = { ...args }
+  for (const key of RESERVED_OPTION_KEYS) delete clean[key]
+  return clean
+}
+
 function requireId(args: AnyArgs): string | number {
   const id = args['id']
   if (typeof id === 'string' || typeof id === 'number') return id
   throw Object.assign(new Error('id is required'), { name: 'ParameterError' })
+}
+
+/**
+ * Returns args without `id`. Written as copy-then-delete rather than the
+ * `const { id: _, ...rest }` idiom because this repo's no-unused-vars config
+ * sets argsIgnorePattern but not ignoreRestSiblings.
+ */
+function withoutId(args: AnyArgs): AnyArgs {
+  const rest = { ...args }
+  delete rest['id']
+  return rest
 }
 
 function withDefaultPage(page: unknown): AnyArgs {
@@ -1668,22 +1696,23 @@ export async function callTool(
   const options = baseOptions(context)
 
   switch (tool.operation) {
+    // Only findAll and find merge caller args into the options object, so only
+    // they need stripReserved. create/update pass args as a structurally
+    // separate JSON body, where stripping would remove legitimate fields.
     case 'findAll': {
-      const { page, ...rest } = args
+      const { page, ...rest } = stripReserved(args)
       return resource['findAll']!({ ...rest, page: withDefaultPage(page), ...options })
     }
     case 'find': {
       const id = requireId(args)
-      const { id: _ignored, ...rest } = args
-      return resource['find']!(id, { ...rest, ...options })
+      return resource['find']!(id, { ...stripReserved(withoutId(args)), ...options })
     }
     case 'create': {
       return resource['create']!(args, options)
     }
     case 'update': {
       const id = requireId(args)
-      const { id: _ignored, ...body } = args
-      return resource['update']!(id, body, options)
+      return resource['update']!(id, withoutId(args), options)
     }
     case 'delete': {
       const id = requireId(args)
@@ -1696,7 +1725,7 @@ export async function callTool(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/tools/dispatch.ts`
-Expected: 10 tests PASS.
+Expected: 13 tests PASS.
 
 If the query-string assertions fail, print the intercepted URL with `nock.recorder.rec()` and adjust the expected `page[size]` / `filter[...]` bracket spelling to match what `qs.stringify` actually emits. Do not change the production code to match a guess.
 
