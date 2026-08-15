@@ -5,7 +5,6 @@ import { buildTools } from '../../src/tools/definitions.js'
 import {
   callTool,
   callerOptions,
-  DEFAULT_PAGE_SIZE,
   DEFAULT_TIMEOUT_MS,
   MAX_PAGE_SIZE,
 } from '../../src/tools/dispatch.js'
@@ -34,10 +33,14 @@ test('find_all sends the api key as an apikey Authorization header', async () =>
   scope.done()
 })
 
-test('find_all applies the default page size', async () => {
+test('find_all applies the documented default page size of 25', async () => {
+  // The literal, not `String(DEFAULT_PAGE_SIZE)`: importing the constant from
+  // the code under test asserts only that the code equals itself. 25 is the
+  // number every find_all description promises a model, and the pairing is
+  // pinned from the other side in test/tools/definitions.ts.
   const scope = nock(API)
     .get('/events')
-    .query((q) => q['page[size]'] === String(DEFAULT_PAGE_SIZE))
+    .query((q) => q['page[size]'] === '25')
     .reply(200, { data: [] }, { 'content-type': 'application/json' })
 
   await callTool(tool('confetti_events_find_all'), {}, context)

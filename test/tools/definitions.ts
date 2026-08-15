@@ -2,7 +2,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Confetti, { schemaToJsonSchema } from 'confetti'
 import { assertObjectSchema, buildTools } from '../../src/tools/definitions.js'
-import { MAX_PAGE_SIZE } from '../../src/tools/dispatch.js'
+import { DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE } from '../../src/tools/dispatch.js'
 import { listResourceOperations } from '../../src/confetti/resource-map.js'
 
 const tools = buildTools()
@@ -104,6 +104,25 @@ test('page documents the size cap the server actually enforces', () => {
   assert.ok(page)
   const text = description(page) + description(nested(page)['size'] ?? {})
   assert.match(text, new RegExp(String(MAX_PAGE_SIZE)), 'the clamp must be advertised')
+})
+
+test('every find_all advertises the default page size it actually applies', () => {
+  // The advertised default and the applied default are two separate literals:
+  // one lives in PAGE_SCHEMA's description, the other in DEFAULT_PAGE_SIZE.
+  // Pinning both to 25 here — and to the same 25 the request carries in
+  // test/tools/dispatch.ts — is what stops a tweak to the constant from
+  // leaving 11 tool descriptions telling a model a false number.
+  assert.equal(DEFAULT_PAGE_SIZE, 25, 'the documented default is 25')
+  for (const tool of tools) {
+    if (tool.operation !== 'findAll') continue
+    const page = (tool.definition.inputSchema.properties as Props)['page']
+    assert.ok(page, `${tool.definition.name} lacks page`)
+    assert.match(
+      description(page),
+      new RegExp(String(DEFAULT_PAGE_SIZE)),
+      `${tool.definition.name} does not state the default page size it will apply`,
+    )
+  }
 })
 
 test('annotations mark reads, updates, and deletes correctly', () => {
