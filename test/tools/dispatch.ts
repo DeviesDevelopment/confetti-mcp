@@ -2,7 +2,7 @@ import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import nock from 'nock'
 import { buildTools } from '../../src/tools/definitions.js'
-import { callTool, DEFAULT_PAGE_SIZE } from '../../src/tools/dispatch.js'
+import { callTool, callerOptions, DEFAULT_PAGE_SIZE } from '../../src/tools/dispatch.js'
 
 const API = 'https://api.confetti.events'
 const tools = new Map(buildTools().map((t) => [t.definition.name, t]))
@@ -236,6 +236,78 @@ test('find arguments cannot redirect the request to another host', async () => {
   assert.ok(legit.isDone())
   assert.equal(evil.isDone(), false)
 })
+
+test('caller options are an allowlist, so an unknown upstream option key is inert', () => {
+  // A denylist of today's connection keys fails open the moment `confetti`
+  // adds another one: `basePath` below stands in for that future key.
+  const hostile = {
+    filter: { signupType: 'rsvp' },
+    sort: 'name',
+    include: ['categories'],
+    page: { size: 5 },
+    basePath: '/evil',
+    apiVersion: 'v2',
+    apiHost: 'evil.example.com',
+    raw: false,
+  }
+
+  assert.deepEqual(Object.keys(callerOptions('findAll', hostile)).sort(), [
+    'filter',
+    'include',
+    'page',
+    'sort',
+  ])
+  assert.deepEqual(Object.keys(callerOptions('find', hostile)), ['include'])
+  for (const operation of ['create', 'update', 'delete'] as const) {
+    assert.deepEqual(callerOptions(operation, hostile), {}, `${operation} takes no caller options`)
+  }
+})
+
+for (const scenario of [
+  {
+    operation: 'create',
+    tool: 'confetti_events_create',
+    args: { name: 'Launch', startDate: '2026-09-01T10:00:00.000Z' },
+    legit: (s: nock.Scope) => s.post('/events'),
+    evil: (s: nock.Scope) => s.post('/events'),
+  },
+  {
+    operation: 'update',
+    tool: 'confetti_events_update',
+    args: { id: 7, name: 'Renamed' },
+    legit: (s: nock.Scope) => s.put('/events/7'),
+    evil: (s: nock.Scope) => s.put('/events/7'),
+  },
+  {
+    operation: 'delete',
+    tool: 'confetti_pages_delete',
+    args: { id: 3 },
+    legit: (s: nock.Scope) => s.delete('/pages/3'),
+    evil: (s: nock.Scope) => s.delete('/pages/3'),
+  },
+]) {
+  test(`${scenario.operation} arguments cannot redirect the request to another host`, async () => {
+    const legit = scenario
+      .legit(nock(API, { reqheaders: { authorization: 'apikey sk_test_key' } }))
+      .query(true)
+      .reply(200, { data: { id: '1', type: 'events', attributes: {} } }, {
+        'content-type': 'application/json',
+      })
+    const evil = scenario
+      .evil(nock('http://evil.example.com'))
+      .query(true)
+      .reply(200, { data: { id: '1', type: 'events', attributes: {} } })
+
+    await callTool(
+      tool(scenario.tool),
+      { ...scenario.args, apiKey: 'ATTACKER_KEY', apiHost: 'evil.example.com', apiProtocol: 'http' },
+      { apiKey: 'sk_test_key' },
+    )
+
+    assert.ok(legit.isDone(), 'must reach the real host with the trusted key')
+    assert.equal(evil.isDone(), false, 'tool arguments must not redirect the upstream request')
+  })
+}
 
 test('the raw response flag cannot be set from tool arguments', async () => {
   const scope = nock(API)

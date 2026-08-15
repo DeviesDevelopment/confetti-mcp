@@ -1,4 +1,4 @@
-import { resourceFor } from '../confetti/resource-map.js'
+import { resourceFor, type Operation } from '../confetti/resource-map.js'
 import type { GeneratedTool } from './definitions.js'
 
 export const DEFAULT_PAGE_SIZE = 25
@@ -61,12 +61,11 @@ function withoutId(args: AnyArgs): AnyArgs {
 }
 
 /**
- * Keys that control the upstream connection itself. They are never accepted
- * from tool arguments: `findAll` and `find` merge caller args and connection
- * options into one object, so without this a caller could set apiHost and
- * redirect the request — with the real API key attached — to a host of their
- * choosing. Spread order alone is not enough, because CallContext permits
- * apiHost/apiProtocol to be absent.
+ * Keys that control the upstream connection itself (`confetti`'s
+ * `baseOptionsSchema`). They are never taken from tool arguments, and they are
+ * also stripped out of create/update bodies so a caller cannot smuggle one
+ * through the body either. No generated schema advertises a field by any of
+ * these names, so stripping them can never drop a real field.
  */
 const RESERVED_OPTION_KEYS = ['apiKey', 'apiHost', 'apiProtocol', 'raw'] as const
 
@@ -74,6 +73,32 @@ function stripReserved(args: AnyArgs): AnyArgs {
   const clean = { ...args }
   for (const key of RESERVED_OPTION_KEYS) delete clean[key]
   return clean
+}
+
+/**
+ * The ONLY option keys a caller may contribute, per operation — exactly what
+ * the generated schemas advertise. This is deliberately an allowlist: the
+ * previous denylist mirrored `confetti`'s connection options by hand, so the
+ * first new key upstream added (`basePath`, `apiVersion`, …) would become
+ * settable from prompt-injectable tool arguments with no compile error and no
+ * failing test. An allowlist makes every future upstream option inert by
+ * construction.
+ */
+export const CALLER_OPTION_KEYS = {
+  findAll: ['filter', 'sort', 'include', 'page'],
+  find: ['include'],
+  create: [],
+  update: [],
+  delete: [],
+} as const satisfies Record<Operation, readonly string[]>
+
+export function callerOptions(operation: Operation, args: AnyArgs): AnyArgs {
+  const options: AnyArgs = {}
+  for (const key of CALLER_OPTION_KEYS[operation]) {
+    const value = args[key]
+    if (value !== undefined) options[key] = value
+  }
+  return options
 }
 
 export async function callTool(
@@ -89,19 +114,20 @@ export async function callTool(
 
   switch (tool.operation) {
     case 'findAll': {
-      const { page, ...rest } = stripReserved(args)
-      return resource['findAll']!({ ...rest, page: withDefaultPage(page), ...options })
+      const caller = callerOptions('findAll', args)
+      caller['page'] = withDefaultPage(args['page'])
+      return resource['findAll']!({ ...caller, ...options })
     }
     case 'find': {
       const id = requireId(args)
-      return resource['find']!(id, { ...stripReserved(withoutId(args)), ...options })
+      return resource['find']!(id, { ...callerOptions('find', args), ...options })
     }
     case 'create': {
-      return resource['create']!(args, options)
+      return resource['create']!(stripReserved(args), options)
     }
     case 'update': {
       const id = requireId(args)
-      return resource['update']!(id, withoutId(args), options)
+      return resource['update']!(id, stripReserved(withoutId(args)), options)
     }
     case 'delete': {
       const id = requireId(args)
