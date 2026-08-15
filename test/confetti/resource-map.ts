@@ -6,6 +6,8 @@ import {
   RESOURCE_MAP,
   includePathFor,
   listResourceOperations,
+  resourceFor,
+  type Operation,
 } from '../../src/confetti/resource-map.js'
 
 const STATIC_EXCLUDES = new Set(['length', 'name', 'prototype', 'models'])
@@ -48,6 +50,37 @@ test('operation counts per verb match the spec', () => {
     return acc
   }, {})
   assert.deepEqual(byVerb, { find: 18, findAll: 11, create: 13, update: 11, delete: 10 })
+})
+
+/**
+ * `resourceFor` hands back methods typed `(...args: never[])`, and dispatch
+ * calls them through an `unknown[]` cast — deliberate, because `confetti`
+ * exports no per-resource types, but it means `tsc` cannot see a signature
+ * change. The count-based drift guards only ask whether a method exists. This
+ * asks what shape it is: if `confetti` reorders `update` to `(id, options,
+ * json)`, every update tool would silently send its body as options and PUT an
+ * empty record. Arity is the cheapest observable that moves when that happens.
+ */
+const EXPECTED_ARITY: Record<Operation, number> = {
+  findAll: 1,
+  find: 2,
+  create: 2,
+  update: 3,
+  delete: 2,
+}
+
+test('every operation keeps the call signature dispatch relies on', () => {
+  const operations = listResourceOperations()
+  assert.equal(operations.length, 63)
+  for (const { modelKey, resourceName, operation } of operations) {
+    const method = resourceFor(modelKey)[operation]
+    assert.equal(typeof method, 'function', `Confetti.${resourceName}.${operation} is not callable`)
+    assert.equal(
+      method!.length,
+      EXPECTED_ARITY[operation],
+      `Confetti.${resourceName}.${operation} takes ${method!.length} arguments, not ${EXPECTED_ARITY[operation]} — dispatch's positional call is wrong for this method`,
+    )
+  }
 })
 
 test('every include path is a path the event model really side-loads', () => {
