@@ -22,7 +22,7 @@ hand-written, so the tool surface tracks the library automatically.
 - API key supplied by the caller via a standard HTTP header, never stored server-side.
 - Self-hostable by anyone from a public Docker image.
 - Deployment topology and Azure resource names stay private.
-- New resources added to `confetti-node` appear as tools with no code change here.
+- New resources in `confetti-node` are picked up with a one-line map addition, and the build fails loudly until it is made.
 
 ## Non-goals
 
@@ -133,8 +133,10 @@ proxy access log; KleerMCP had to add explicit log-filter suppression to work
 around exactly this. It also sits in plaintext in the user's `~/.claude.json`,
 whereas a header supports `${CONFETTI_API_KEY}` expansion or a `headersHelper`
 command, so the secret need not be in a config file at all. RFC 6750 additionally
-discourages tokens in query strings. Both URL-carried fallbacks get the same
-log-suppression treatment as KleerMCP, scoped to those routes.
+discourages tokens in query strings. The server performs no request logging at
+all, so the URL-carried fallbacks are never logged in the first place; the
+404 and error handlers likewise deliberately never echo the request URL back
+to the client.
 
 Any client that *can* send a header should. The fallbacks exist because two real
 Claude surfaces cannot, not because the tradeoff is even.
@@ -275,12 +277,12 @@ the upstream API. The tests that carry real weight:
   test that catches the endpoint-naming fragility described in §5.
 - **Filter grammar** — `ops` and `resources` combinations produce exactly the
   expected tool sets, including the HTTP-verb aliases and the 63-tool default.
-- **Auth extraction** — all three carriers, precedence between them, and the
+- **Auth extraction** — all four carriers, precedence between them, and the
   `401` path. Plus an assertion that the key appears in no log output.
 - **Error mapping** — each upstream failure mode produces the right `isError`
   message, driven by `error.name`.
 - **Schema generation** — spot-check that `events_create` inputs match
-  `EventCreateSchema` and that relationship fields are stripped.
+  `EventCreateSchema`.
 
 ## 9. Known constraints
 
@@ -290,11 +292,11 @@ the upstream API. The tests that carry real weight:
   would be cleaner — tracked as a follow-up, not a blocker.
 - **claude.ai web cannot set custom headers**, which is why the path fallback
   exists. Claude Code and Claude Desktop both handle headers natively.
-- **63 tool schemas is roughly 40–60k tokens of always-on context.** This was a
-  deliberate choice for discoverability over context economy. The `?ops=` and
-  `?resources=` filters are the escape valve, and the generated architecture
-  means switching to a smaller surface later is a change to one module, not a
-  rewrite.
+- **63 tool schemas is roughly 19k tokens (68 KB serialised) of always-on
+  context.** This was a deliberate choice for discoverability over context
+  economy. The `?ops=` and `?resources=` filters are the escape valve, and the
+  generated architecture means switching to a smaller surface later is a
+  change to one module, not a rewrite.
 
 ## 10. Follow-ups
 
