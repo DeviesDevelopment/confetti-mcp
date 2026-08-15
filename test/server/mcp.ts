@@ -109,6 +109,19 @@ test('an unknown tool name is a protocol error, not a tool result', async () => 
   server.close()
 })
 
+test('the connection ships instructions, scoped to the tools it actually has', async () => {
+  const { server, port } = await startServer()
+  const { client, transport } = await connect(port, '/mcp?resources=events')
+
+  const instructions = client.getInstructions()
+  assert.ok(instructions && instructions.length > 0, 'ServerOptions.instructions went unused')
+  assert.match(instructions, /Confetti/)
+  assert.ok(!/tickets/i.test(instructions), 'a scoped connection must not be oriented around tools it lacks')
+
+  await transport.close()
+  server.close()
+})
+
 test('tool results are compact JSON, not pretty-printed', async () => {
   // Indentation was ~19% of every read response, paid on every call.
   const { server, port } = await startServer()

@@ -11,6 +11,7 @@ import { buildTools, type GeneratedTool } from '../tools/definitions.js'
 import { parseToolFilter, selectTools, toolSetCacheKey } from '../tools/filter.js'
 import { callTool, type CallContext } from '../tools/dispatch.js'
 import { toolErrorMessage } from '../tools/errors.js'
+import { buildInstructions } from './instructions.js'
 
 const require = createRequire(import.meta.url)
 const pkg = require('../../package.json') as { version: string }
@@ -32,6 +33,23 @@ const ALL_TOOL_NAMES = new Set(ALL_TOOLS.map((tool) => tool.definition.name))
 const toolSetCache = new Map<string, GeneratedTool[]>()
 
 const TOOL_SET_CACHE_LIMIT = 128
+
+/**
+ * Instructions are regenerated per connection because they are scoped to that
+ * connection's filtered tools, and a server is constructed per request. Keyed
+ * on the tool array itself: `getToolSet` hands back the same memoised array for
+ * the same connect URL, so this collapses to one walk of the registry per
+ * distinct filter, and entries disappear with the arrays they describe.
+ */
+const instructionsCache = new WeakMap<GeneratedTool[], string>()
+
+function instructionsFor(tools: GeneratedTool[]): string {
+  const cached = instructionsCache.get(tools)
+  if (cached !== undefined) return cached
+  const built = buildInstructions(tools)
+  instructionsCache.set(tools, built)
+  return built
+}
 
 export function getToolSet(query: Record<string, unknown>): GeneratedTool[] {
   const key = toolSetCacheKey(query)
@@ -78,7 +96,7 @@ export function createMcpServer(options: {
 }): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
-    { capabilities: { tools: {} } },
+    { capabilities: { tools: {} }, instructions: instructionsFor(options.tools) },
   )
 
   const requestId = options.requestId ?? newRequestId()
