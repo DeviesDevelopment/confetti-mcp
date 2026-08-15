@@ -157,7 +157,21 @@ both vocabularies are natural to reach for. `read` covers both `find` and
 `find_all`.
 
 Unknown resource or op names are rejected with `400` and a message listing valid
-values, rather than silently yielding an empty tool list.
+values, rather than silently yielding an empty tool list. An empty value
+(`?ops=`) is treated as absent, matching ordinary query-string semantics.
+
+**The filter is enforced, not advisory.** It governs `tools/call` as well as
+`tools/list`: the per-request server's name lookup is built from the filtered
+set, so a tool excluded from a connection is refused when invoked directly, not
+merely hidden from the listing. A `?ops=read` connection cannot call a delete
+even by naming it. The refusal message distinguishes "excluded by your filter"
+from "no such tool" so the caller can act on it.
+
+Relatedly, the trusted connection context is spread **after** caller-supplied
+tool arguments in every dispatch path, so a tool argument cannot override
+`apiKey`, `apiHost`, or `apiProtocol` and redirect the upstream call. Both
+properties carry regression tests, since each currently holds by construction
+rather than by an explicit guard.
 
 Default with no parameters is all 63 tools. The API key already grants full
 access, and this matches how GitHub, Linear, and Notion's servers behave.

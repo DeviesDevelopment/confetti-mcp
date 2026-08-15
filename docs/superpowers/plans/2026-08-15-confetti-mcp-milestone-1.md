@@ -1827,6 +1827,66 @@ test('an unknown tool name returns an isError result', async () => {
   server.close()
 })
 
+test('a filtered-out tool is refused when called, not merely hidden from the list', async () => {
+  const { server, port } = await startServer()
+  const { client, transport } = await connect(port, '/mcp?ops=read')
+
+  const { tools } = await client.listTools()
+  assert.equal(
+    tools.find((t) => t.name === 'confetti_pages_delete'),
+    undefined,
+    'a read-only connection must not list a delete tool',
+  )
+
+  // The filter must be enforced, not advisory: naming the tool directly must fail.
+  const result = await client.callTool({ name: 'confetti_pages_delete', arguments: { id: 1 } })
+  assert.equal(result.isError, true, 'a read-only connection must refuse a delete call')
+  const content = result.content as Array<{ type: string; text: string }>
+  assert.match(content[0]!.text, /not available on this connection/)
+
+  await transport.close()
+  server.close()
+})
+
+test('every listed tool on a filtered connection belongs to the requested ops', async () => {
+  const { server, port } = await startServer()
+  const { client, transport } = await connect(port, '/mcp?ops=read')
+
+  const { tools } = await client.listTools()
+  assert.equal(tools.length, 29)
+  for (const tool of tools) {
+    assert.match(
+      tool.name,
+      /_(find|find_all)$/,
+      `${tool.name} is not a read operation but was listed on a ?ops=read connection`,
+    )
+  }
+
+  await transport.close()
+  server.close()
+})
+
+test('tool arguments cannot override the connection api key or host', async () => {
+  const { server, port } = await startServer()
+  const legit = nock(API, { reqheaders: { authorization: 'apikey sk_test_key' } })
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+  const evil = nock('http://evil.example.com').get('/events').query(true).reply(200, { data: [] })
+
+  const { client, transport } = await connect(port)
+  await client.callTool({
+    name: 'confetti_events_find_all',
+    arguments: { apiKey: 'ATTACKER_KEY', apiHost: 'evil.example.com', apiProtocol: 'http' },
+  })
+
+  assert.ok(legit.isDone(), 'the trusted connection context must win over tool arguments')
+  assert.equal(evil.isDone(), false, 'tool arguments must not be able to redirect the upstream call')
+
+  await transport.close()
+  server.close()
+})
+
 test('a request with no api key is rejected with 401', async () => {
   const { server, port } = await startServer()
   const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -1889,6 +1949,13 @@ export const SERVER_VERSION = '0.1.0'
 /** All 63 tools, generated once. Definition building walks every Zod schema. */
 const ALL_TOOLS = buildTools()
 
+/**
+ * Every tool name that exists at all, regardless of filtering. Used only to
+ * tell "this tool was filtered out of your connection" apart from "no such
+ * tool", so a filtered caller gets an actionable message.
+ */
+const ALL_TOOL_NAMES = new Set(ALL_TOOLS.map((tool) => tool.definition.name))
+
 /** Filtered tool sets are memoised per normalised query. */
 const toolSetCache = new Map<string, GeneratedTool[]>()
 
@@ -1918,9 +1985,16 @@ export function createMcpServer(options: { tools: GeneratedTool[]; context: Call
     const name = request.params.name
     const tool = byName.get(name)
     if (!tool) {
+      // `byName` is built from the FILTERED set, so a tool excluded by
+      // ?ops= / ?resources= is refused here and not merely hidden from
+      // tools/list. Without this the filter would be advisory: a ?ops=read
+      // connection could still invoke a delete by naming it directly.
+      const text = ALL_TOOL_NAMES.has(name)
+        ? `Tool '${name}' is not available on this connection — its operation or resource is excluded by the ?ops= / ?resources= filter in the connect URL.`
+        : `Unknown tool '${name}'.`
       return {
         isError: true,
-        content: [{ type: 'text' as const, text: `Unknown tool '${name}'.` }],
+        content: [{ type: 'text' as const, text }],
       }
     }
 
@@ -2029,7 +2103,7 @@ export function createApp(config: Config): express.Express {
 - [ ] **Step 5: Run the whole suite**
 
 Run: `npm test`
-Expected: all tests PASS, including the 8 new ones in `test/server/mcp.ts` and the Task 1 health tests.
+Expected: all tests PASS, including the 11 new ones in `test/server/mcp.ts` and the Task 1 health tests.
 
 If `StreamableHTTPClientTransport`'s import path errors, list the client directory with `ls node_modules/@modelcontextprotocol/sdk/dist/esm/client/` and use the path that exists. Do not stub the transport.
 
