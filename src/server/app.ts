@@ -73,5 +73,12 @@ export function createApp(config: Config): express.Express {
   app.get('/mcp', methodNotAllowed)
   app.delete('/mcp', methodNotAllowed)
 
+  // Fallback for MCP clients that cannot set request headers (notably the
+  // claude.ai web connector UI). The key travels in the URL, so this route is
+  // deliberately excluded from any request logging.
+  app.post('/mcp/k/:apiKey', handleMcp)
+  app.get('/mcp/k/:apiKey', methodNotAllowed)
+  app.delete('/mcp/k/:apiKey', methodNotAllowed)
+
   return app
 }
