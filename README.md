@@ -72,8 +72,8 @@ helper and retries once, so a rotated key heals without restarting the session.
 
 ## Trimming the tool surface
 
-The full tool list — all 63 tools — serialises to roughly 68 KB of JSON, about
-19,000 tokens of context spent before you've asked anything. Narrow it per
+The full tool list — all 63 tools — serialises to roughly 71 KB of JSON, about
+20,000 tokens of context spent before you've asked anything. Narrow it per
 connection with query parameters on the connect URL:
 
 | URL | Tools |
@@ -162,11 +162,23 @@ upstream:
 
 ```bash
 curl https://your-host/
-# {"status":"ok","server":"confetti-mcp","version":"0.1.0","usage":"POST /mcp with an \"Authorization: Bearer <confetti-api-key>\" header."}
+# {"status":"ok","server":"confetti-mcp","version":"0.2.0","usage":"POST /mcp with an \"Authorization: Bearer <confetti-api-key>\" header.","filtering":"All 63 tools are exposed by default. Narrow the connection with ?ops= and ?resources= ..."}
 ```
 
 The image's own `HEALTHCHECK` uses this endpoint, so plain Docker and compose
 restart a wedged container without any extra configuration.
+
+### Logs
+
+The server writes one structured JSON line to **stderr** per failed tool call and
+per rejected request — request id, tool name, error class, upstream status class,
+and duration. It deliberately never logs the API key, the tool arguments, the
+request URL, or the error message, because all four can carry caller data and the
+URL carriers put the key in the path or query string. A regression test asserts
+the key never reaches any output channel through any carrier
+(`test/server/no-key-in-logs.ts`).
+
+Successful calls are not logged at all.
 
 **Managed platforms ignore the Dockerfile `HEALTHCHECK`** and probe a path you
 configure instead — point them at `/`. On Azure App Service for Containers that

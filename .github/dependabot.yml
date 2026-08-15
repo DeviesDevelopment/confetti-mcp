@@ -1,0 +1,28 @@
+version: 2
+
+# The base image is pinned by digest and every action by commit SHA, which trades
+# drift for staleness. These keep the pins moving without giving that trade back.
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'ci'
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'build'
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'deps'
+    groups:
+      dev-dependencies:
+        dependency-type: development
