@@ -1301,7 +1301,7 @@ git commit -m "feat: filter the tool set by ops and resources"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `toolErrorMessage(error: unknown, toolName: string): string`.
+- Produces: `toolErrorMessage(error: unknown, toolName: string, secret?: string): string`. The optional `secret` is the caller's API key, exact-matched out of the returned message; Task 9 must pass `options.context.apiKey`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1353,10 +1353,32 @@ test('handles non-Error throwables', () => {
   assert.match(message, /a bare string/)
 })
 
-test('never echoes an api key that appears in the message', () => {
+test('never echoes an api-key-shaped token that appears in the message', () => {
   const message = toolErrorMessage(named('ParameterError', 'bad key sk_live_secret123'), 'confetti_events_find')
   assert.ok(!message.includes('sk_live_secret123'), 'api-key-shaped tokens must be redacted')
   assert.match(message, /\[redacted\]/)
+})
+
+test('redacts the caller api key exactly, whatever its shape', () => {
+  const message = toolErrorMessage(named('ParameterError', 'rejected key my-key here'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'), 'the caller key must not survive into the message')
+  assert.match(message, /\[redacted\]/)
+})
+
+test('redacts every occurrence of the caller api key', () => {
+  const message = toolErrorMessage(named('ParameterError', 'my-key then my-key again'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'))
+})
+
+test('redacts the caller key even from an unclassified error', () => {
+  const message = toolErrorMessage(named('TypeError', 'boom my-key'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'))
+  assert.match(message, /\[TypeError\]/)
+})
+
+test('an empty or trivially short secret does not corrupt the message', () => {
+  assert.match(toolErrorMessage(named('ParameterError', 'plain failure'), 'confetti_events_find', ''), /plain failure/)
+  assert.match(toolErrorMessage(named('ParameterError', 'plain failure'), 'confetti_events_find', 'ab'), /plain failure/)
 })
 ```
 
@@ -1374,9 +1396,17 @@ Expected: FAIL — cannot find module `../../src/tools/errors.js`.
  * throws does set `name`, so classification goes by that instead of instanceof.
  */
 
-/** Redacts anything shaped like a Confetti API key before it reaches a client. */
-function redact(text: string): string {
-  return text.replace(/\bsk_[A-Za-z0-9_-]{4,}/g, '[redacted]')
+/**
+ * Redacts the caller's key, plus anything shaped like one, before it reaches a
+ * client. Confetti enforces no key format (`apiKey: z.string()`), so the shape
+ * pattern is only a secondary net — exact-matching the caller's own key is what
+ * actually holds the "key never reaches a client" constraint.
+ */
+function redact(text: string, secret?: string): string {
+  const byShape = text.replace(/\bsk_[A-Za-z0-9_-]{4,}/g, '[redacted]')
+  // Guard the length: replaceAll('') inserts between every character.
+  if (!secret || secret.length < 4) return byShape
+  return byShape.replaceAll(secret, '[redacted]')
 }
 
 function messageOf(error: unknown): string {
@@ -1389,26 +1419,36 @@ function nameOf(error: unknown): string {
   return error instanceof Error ? error.name : typeof error
 }
 
-export function toolErrorMessage(error: unknown, toolName: string): string {
-  const detail = redact(messageOf(error))
-  switch (nameOf(error)) {
+export function toolErrorMessage(error: unknown, toolName: string, secret?: string): string {
+  const detail = messageOf(error)
+  const name = nameOf(error)
+
+  let message: string
+  switch (name) {
     case 'ParameterError':
     case 'ZodError':
-      return `Invalid parameters for '${toolName}': ${detail}`
+      message = `Invalid parameters for '${toolName}': ${detail}`
+      break
     case 'NotFoundError':
-      return `Not found in '${toolName}': ${detail}`
+      message = `Not found in '${toolName}': ${detail}`
+      break
     case 'OperationNotFoundError':
-      return `Unsupported operation '${toolName}': ${detail}`
+      message = `Unsupported operation '${toolName}': ${detail}`
+      break
     default:
-      return `Error in '${toolName}': [${nameOf(error)}] ${detail}`
+      message = `Error in '${toolName}': [${name}] ${detail}`
   }
+
+  // Redact the assembled message, not just the detail, so nothing reaching the
+  // output via the error's name can bypass it.
+  return redact(message, secret)
 }
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/tools/errors.ts`
-Expected: 7 tests PASS.
+Expected: 11 tests PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -1878,7 +1918,10 @@ export function createMcpServer(options: { tools: GeneratedTool[]; context: Call
     } catch (error) {
       return {
         isError: true,
-        content: [{ type: 'text' as const, text: toolErrorMessage(error, name) }],
+        // The caller's key is passed so it can be exact-matched out of the
+        // message. Confetti enforces no key format, so shape-matching alone
+        // would not hold the "key never reaches a client" constraint.
+        content: [{ type: 'text' as const, text: toolErrorMessage(error, name, options.context.apiKey) }],
       }
     }
   })
