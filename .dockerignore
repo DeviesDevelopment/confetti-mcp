@@ -1,7 +1,10 @@
 node_modules
 dist
 .git
+.github
+.superpowers
 test
 docs
+README.md
 *.log
 .env

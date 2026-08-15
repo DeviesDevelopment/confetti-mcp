@@ -11,7 +11,7 @@
     "build": "npm run clean && tsc -p tsconfig.json",
     "start": "node dist/main.js",
     "dev": "tsx watch src/main.ts",
-    "test": "node --import=tsx --test --test-force-exit test/**/*.ts",
+    "test": "node --import=tsx --test --test-force-exit 'test/**/*.ts'",
     "lint": "eslint . && tsc --noEmit"
   },
   "dependencies": {
