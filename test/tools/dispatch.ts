@@ -6,6 +6,7 @@ import {
   callTool,
   callerOptions,
   DEFAULT_PAGE_SIZE,
+  DEFAULT_TIMEOUT_MS,
   MAX_PAGE_SIZE,
 } from '../../src/tools/dispatch.js'
 
@@ -242,6 +243,33 @@ test('ordinary numeric and hashid ids still pass', async () => {
 
   await callTool(tool('confetti_events_find'), { id: 'aB3-x_9' }, context)
   scope.done()
+})
+
+test('a hung upstream call is abandoned at the deadline', async () => {
+  // confetti passes `timeout` to node-fetch v3, which ignores it, so nothing
+  // upstream bounds this call: verified STILL HANGING after 8s against a
+  // blackhole. The deadline has to live here.
+  nock(API)
+    .get('/events')
+    .query(true)
+    .delay(2000)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  const started = Date.now()
+  await assert.rejects(
+    () => callTool(tool('confetti_events_find_all'), {}, { ...context, timeoutMs: 40 }),
+    (error: Error) => {
+      assert.equal(error.name, 'ParameterError')
+      assert.match(error.message, /40 ?ms/, 'the message must name the limit that fired')
+      return true
+    },
+  )
+  assert.ok(Date.now() - started < 1000, 'the call must be abandoned at the deadline, not later')
+})
+
+test('the default deadline is a finite number of milliseconds', () => {
+  assert.equal(typeof DEFAULT_TIMEOUT_MS, 'number')
+  assert.ok(DEFAULT_TIMEOUT_MS > 0 && Number.isFinite(DEFAULT_TIMEOUT_MS))
 })
 
 test('upstream 404 propagates as NotFoundError', async () => {

@@ -11,10 +11,22 @@ export const DEFAULT_PAGE_SIZE = 25
  */
 export const MAX_PAGE_SIZE = 100
 
+/**
+ * Wall-clock ceiling on a single upstream call. `confetti` looks guarded —
+ * its adapter passes `timeout: 5000/15000` to node-fetch — but node-fetch v3
+ * removed that option and reads only `signal`, so nothing bounds the call
+ * today. Without a deadline a slow or blackholed api.confetti.events turns
+ * every in-flight tools/call into a leak: client connection, Server/transport
+ * pair and upstream socket held until TCP gives up.
+ */
+export const DEFAULT_TIMEOUT_MS = 25_000
+
 export interface CallContext {
   apiKey: string
   apiHost?: string
   apiProtocol?: string
+  /** Overrides DEFAULT_TIMEOUT_MS for this connection. */
+  timeoutMs?: number
 }
 
 type AnyArgs = Record<string, unknown>
@@ -128,7 +140,49 @@ export function callerOptions(operation: Operation, args: AnyArgs): AnyArgs {
   return options
 }
 
+/**
+ * Races the upstream call against a real deadline. The rejection carries the
+ * ParameterError name so it reaches the caller as an actionable message rather
+ * than an opaque server fault, plus `code`/`timeoutMs` so error formatting can
+ * recognise a timeout without string-matching. Nothing here can cancel the
+ * in-flight socket — `confetti` accepts no AbortSignal — so this frees the MCP
+ * request and transport, and the upstream fix is still worth filing.
+ */
+async function withDeadline<T>(work: Promise<T>, timeoutMs: number, toolName: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const deadline = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(
+        parameterError(
+          `'${toolName}' gave up waiting for the Confetti API after ${timeoutMs} ms. Retry once; if it repeats, ask for fewer records (a smaller page.size) or fewer include values.`,
+          { code: 'UPSTREAM_TIMEOUT', timeoutMs },
+        ),
+      )
+    }, timeoutMs)
+    // The process must not be kept alive by a pending deadline.
+    timer.unref?.()
+  })
+
+  try {
+    return await Promise.race([work, deadline])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 export async function callTool(
+  tool: GeneratedTool,
+  args: AnyArgs,
+  context: CallContext,
+): Promise<unknown> {
+  return withDeadline(
+    dispatch(tool, args, context),
+    context.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+    tool.definition.name,
+  )
+}
+
+async function dispatch(
   tool: GeneratedTool,
   args: AnyArgs,
   context: CallContext,
