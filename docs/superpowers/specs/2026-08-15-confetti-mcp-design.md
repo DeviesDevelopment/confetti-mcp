@@ -104,22 +104,40 @@ Accepted carriers, in precedence order:
 1. `Authorization: Bearer <key>` — the primary, and the only one documented as
    first-class.
 2. `X-Api-Key: <key>` — alias, for clients whose UI labels the field that way.
-3. `/mcp/k/<key>` path segment — fallback for clients that cannot set headers
-   (notably the claude.ai web connector UI). Documented as discouraged.
+3. `?apiKey=<key>` query parameter — URL-carried fallback.
+4. `/mcp/k/<key>` path segment — the other URL-carried fallback.
 
 Missing or empty key returns `401` with a `WWW-Authenticate: Bearer` header.
+
+A present-but-malformed `Authorization` header returns `401` rather than falling
+through to a weaker carrier; an empty value in carriers 2–4 falls through to the
+next. Explicitly presenting a broken credential is an error, not an invitation to
+try something else.
+
+**Why two URL-carried fallbacks.** Claude Desktop's **Code tab** reads
+`~/.claude.json` and `.mcp.json`, so it handles headers natively and needs
+neither. Claude Desktop's **chat** surface and claude.ai web use the custom
+connector UI, whose only fields are the remote MCP server URL and, under advanced
+settings, an OAuth client id and secret — there is no way to send a header. Those
+clients need the key in the URL. The query form composes more naturally with the
+`?ops=` / `?resources=` filters; the path form is kept for clients or proxies
+that handle it better. Both carry identical exposure and both are documented as
+second-class.
 
 The key is never logged, never written to disk, and never included in error
 messages returned to the client.
 
-**Why header over path or querystring.** A key in the URL lands in Azure App
-Service HTTP logs, Application Insights request telemetry, and any reverse proxy
-access log; KleerMCP had to add explicit log-filter suppression to work around
-exactly this. It also sits in plaintext in the user's `~/.claude.json`, whereas a
-header supports `${CONFETTI_API_KEY}` expansion or a `headersHelper` command, so
-the secret need not be in a config file at all. RFC 6750 additionally discourages
-tokens in query strings. The path fallback carries the same log-suppression
-treatment as KleerMCP, scoped to that route only.
+**Why header is still the documented default.** A key in the URL lands in Azure
+App Service HTTP logs, Application Insights request telemetry, and any reverse
+proxy access log; KleerMCP had to add explicit log-filter suppression to work
+around exactly this. It also sits in plaintext in the user's `~/.claude.json`,
+whereas a header supports `${CONFETTI_API_KEY}` expansion or a `headersHelper`
+command, so the secret need not be in a config file at all. RFC 6750 additionally
+discourages tokens in query strings. Both URL-carried fallbacks get the same
+log-suppression treatment as KleerMCP, scoped to those routes.
+
+Any client that *can* send a header should. The fallbacks exist because two real
+Claude surfaces cannot, not because the tradeoff is even.
 
 ## 4. Connect-URL grammar
 

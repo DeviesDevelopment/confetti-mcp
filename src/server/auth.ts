@@ -1,6 +1,7 @@
 export interface ApiKeyCarrier {
   headers: Record<string, unknown>
   params?: Record<string, string>
+  query?: Record<string, unknown>
 }
 
 function firstString(value: unknown): string | undefined {
@@ -17,9 +18,9 @@ function clean(value: string | undefined): string | undefined {
 /**
  * Extracts the caller's Confetti API key.
  *
- * Precedence: Authorization: Bearer, then X-Api-Key, then the :apiKey path
- * segment. The path form exists only for clients that cannot set headers and
- * is documented as discouraged.
+ * Precedence: Authorization: Bearer, then X-Api-Key, then the ?apiKey query
+ * parameter, then the :apiKey path segment. The query and path forms exist
+ * only for clients that cannot set headers and are documented as discouraged.
  */
 export function extractApiKey(req: ApiKeyCarrier): string | undefined {
   const authorization = clean(firstString(req.headers['authorization']))
@@ -32,6 +33,9 @@ export function extractApiKey(req: ApiKeyCarrier): string | undefined {
 
   const alias = clean(firstString(req.headers['x-api-key']))
   if (alias) return alias
+
+  const queryKey = clean(firstString(req.query?.['apiKey']))
+  if (queryKey) return queryKey
 
   return clean(req.params?.['apiKey'])
 }

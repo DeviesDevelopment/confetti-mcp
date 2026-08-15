@@ -46,3 +46,26 @@ test('ignores a non-Bearer Authorization scheme', () => {
 test('trims surrounding whitespace', () => {
   assert.equal(extractApiKey({ headers: { 'x-api-key': '  sk_pad  ' } }), 'sk_pad')
 })
+
+test('reads apiKey query parameter', () => {
+  assert.equal(extractApiKey({ headers: {}, query: { apiKey: 'sk_query' } }), 'sk_query')
+})
+
+test('X-Api-Key wins over the query parameter', () => {
+  const key = extractApiKey({ headers: { 'x-api-key': 'sk_alias' }, query: { apiKey: 'sk_query' } })
+  assert.equal(key, 'sk_alias')
+})
+
+test('query parameter wins over the path param', () => {
+  const key = extractApiKey({ headers: {}, query: { apiKey: 'sk_query' }, params: { apiKey: 'sk_path' } })
+  assert.equal(key, 'sk_query')
+})
+
+test('a repeated apiKey query parameter takes the first value', () => {
+  assert.equal(extractApiKey({ headers: {}, query: { apiKey: ['sk_one', 'sk_two'] } }), 'sk_one')
+})
+
+test('an empty apiKey query parameter falls through to the path param', () => {
+  const key = extractApiKey({ headers: {}, query: { apiKey: '  ' }, params: { apiKey: 'sk_path' } })
+  assert.equal(key, 'sk_path')
+})
