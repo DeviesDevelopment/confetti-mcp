@@ -4,7 +4,7 @@
 # nothing re-tests. To move it deliberately:
 #   docker buildx imagetools inspect node:22-alpine | head -3
 # and replace the digest in BOTH stages with the `Digest:` line it prints.
-FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS build
+FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS build
 WORKDIR /app
 COPY package.json package-lock.json ./
 # --ignore-scripts: no production dependency declares an install hook, so this
@@ -15,7 +15,7 @@ COPY tsconfig.json ./
 COPY src ./src
 RUN npm run build
 
-FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runtime
+FROM node:26-alpine@sha256:aadf416b2cdce311a8811ba3f0608a61b77dbf997500e2eafe781b51f6a0b019 AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=8080
