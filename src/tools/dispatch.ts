@@ -1,6 +1,7 @@
 import { resourceFor, type Operation } from '../confetti/resource-map.js'
 import type { GeneratedTool } from './definitions.js'
 import { parameterError, validateArgs } from './validate.js'
+import { shapeDeleted, shapeList, shapeOk, shapeRecord, type PageInfo } from './shape.js'
 
 export const DEFAULT_PAGE_SIZE = 25
 
@@ -37,6 +38,10 @@ function baseOptions(context: CallContext): AnyArgs {
     apiKey: context.apiKey,
     ...(context.apiHost ? { apiHost: context.apiHost } : {}),
     ...(context.apiProtocol ? { apiProtocol: context.apiProtocol } : {}),
+    // Always raw: the adapter's deserialiser is a process-global yayson Store
+    // that leaks records between calls (and so between tenants). shape.ts
+    // flattens the JSON:API body with a Store of its own instead.
+    raw: true,
   }
 }
 
@@ -88,6 +93,13 @@ function pageOption(page: unknown): AnyArgs {
   if ('size' in provided) provided['size'] = clamped(provided['size'])
   if ('limit' in provided) provided['limit'] = clamped(provided['limit'])
   return { size: DEFAULT_PAGE_SIZE, ...provided }
+}
+
+/** What the caller actually asked for, echoed back in the read envelope. */
+function pageInfo(page: AnyArgs): PageInfo {
+  const number = typeof page['number'] === 'number' ? page['number'] : 1
+  const size = typeof page['size'] === 'number' ? page['size'] : page['limit']
+  return { number, size: typeof size === 'number' ? size : DEFAULT_PAGE_SIZE }
 }
 
 function withoutId(args: AnyArgs): AnyArgs {
@@ -196,23 +208,29 @@ async function dispatch(
   switch (tool.operation) {
     case 'findAll': {
       const caller = callerOptions('findAll', args)
-      caller['page'] = pageOption(args['page'])
-      return resource['findAll']!({ ...caller, ...options })
+      const page = pageOption(args['page'])
+      caller['page'] = page
+      const body = await resource['findAll']!({ ...caller, ...options })
+      return shapeList(body, pageInfo(page))
     }
     case 'find': {
       const id = requireId(args)
-      return resource['find']!(id, { ...callerOptions('find', args), ...options })
+      const body = await resource['find']!(id, { ...callerOptions('find', args), ...options })
+      return shapeRecord(body) ?? shapeOk('find', tool.modelKey, id)
     }
     case 'create': {
-      return resource['create']!(stripReserved(args), options)
+      const body = await resource['create']!(stripReserved(args), options)
+      return shapeRecord(body) ?? shapeOk('create', tool.modelKey)
     }
     case 'update': {
       const id = requireId(args)
-      return resource['update']!(id, stripReserved(withoutId(args)), options)
+      const body = await resource['update']!(id, stripReserved(withoutId(args)), options)
+      return shapeRecord(body) ?? shapeOk('update', tool.modelKey, id)
     }
     case 'delete': {
       const id = requireId(args)
-      return resource['delete']!(id, options)
+      await resource['delete']!(id, options)
+      return shapeDeleted(tool.modelKey, id)
     }
   }
 }

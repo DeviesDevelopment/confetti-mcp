@@ -410,6 +410,104 @@ for (const scenario of [
   })
 }
 
+test('one tenant never receives another tenant relationship record', async () => {
+  // Verified bleed: confetti's adapter syncs every response into ONE
+  // module-level yayson Store, and relationship references are resolved by
+  // scanning every record ever synced in the process. Tenant B's linkage-only
+  // reference to workspace 5 therefore resolved to tenant A's workspace.
+  nock(API, { reqheaders: { authorization: 'apikey sk_tenant_a' } })
+    .get('/events/1')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '1',
+          type: 'events',
+          attributes: { name: 'A event' },
+          relationships: { workspace: { data: { id: '5', type: 'workspaces' } } },
+        },
+        included: [
+          { id: '5', type: 'workspaces', attributes: { name: 'Tenant A', secret: 'A-only-data' } },
+        ],
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  nock(API, { reqheaders: { authorization: 'apikey sk_tenant_b' } })
+    .get('/events/2')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '2',
+          type: 'events',
+          attributes: { name: 'B event' },
+          relationships: { workspace: { data: { id: '5', type: 'workspaces' } } },
+        },
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  await callTool(tool('confetti_events_find'), { id: 1 }, { apiKey: 'sk_tenant_a' })
+  const forB = await callTool(tool('confetti_events_find'), { id: 2 }, { apiKey: 'sk_tenant_b' })
+
+  const serialised = JSON.stringify(forB)
+  assert.doesNotMatch(serialised, /Tenant A/, "tenant A's workspace must not appear")
+  assert.doesNotMatch(serialised, /A-only-data/)
+})
+
+test('find_all returns an envelope that reports pagination', async () => {
+  nock(API)
+    .get('/events')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: [{ id: '1', type: 'events', attributes: { name: 'Kickoff' } }],
+        meta: { total: 137 },
+        links: { next: '/events?page[number]=2' },
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  const result = (await callTool(
+    tool('confetti_events_find_all'),
+    { page: { number: 1, size: 1 } },
+    context,
+  )) as { returned: number; page: { number: number; size: number }; more: string; records: unknown[] }
+
+  assert.equal(result.returned, 1)
+  assert.deepEqual(result.page, { number: 1, size: 1 })
+  assert.equal(result.more, 'yes')
+  assert.equal((result.records[0] as { name: string }).name, 'Kickoff')
+})
+
+test('an empty find_all page is distinguishable from a full one', async () => {
+  nock(API).get('/events').query(true).reply(200, { data: [] }, {
+    'content-type': 'application/json',
+  })
+
+  const result = (await callTool(tool('confetti_events_find_all'), {}, context)) as {
+    returned: number
+    more: string
+    records: unknown[]
+  }
+
+  assert.equal(result.returned, 0)
+  assert.equal(result.more, 'no')
+  assert.deepEqual(result.records, [])
+})
+
+test('a delete is confirmed rather than returning an empty string', async () => {
+  nock(API).delete('/pages/3').query(true).reply(204, '')
+
+  const result = await callTool(tool('confetti_pages_delete'), { id: 3 }, context)
+
+  assert.deepEqual(result, { deleted: true, resource: 'page', id: '3' })
+})
+
 test('the raw response flag cannot be set from tool arguments', async () => {
   const scope = nock(API)
     .get('/events')
@@ -418,9 +516,17 @@ test('the raw response flag cannot be set from tool arguments', async () => {
       'content-type': 'application/json',
     })
 
-  const result = await callTool(tool('confetti_events_find_all'), { raw: true }, { apiKey: 'sk_test_key' })
+  const result = (await callTool(
+    tool('confetti_events_find_all'),
+    { raw: true },
+    { apiKey: 'sk_test_key' },
+  )) as Record<string, unknown>
 
-  // raw:true would return the unparsed JSON:API envelope with a `data` key.
-  assert.ok(Array.isArray(result), 'response must stay deserialised regardless of a raw argument')
+  // The unparsed JSON:API body must never reach the caller: dispatch decides
+  // that the upstream call is raw, and shaping is not caller-controlled.
+  assert.equal(result['data'], undefined, 'the JSON:API envelope must not be returned')
+  const records = result['records'] as Array<{ name: string }>
+  assert.ok(Array.isArray(records), 'records must stay deserialised')
+  assert.equal(records[0]!.name, 'Kickoff')
   scope.done()
 })
