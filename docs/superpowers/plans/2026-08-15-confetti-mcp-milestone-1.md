@@ -778,6 +778,17 @@ test('events_update requires id alongside the update fields', () => {
   assert.ok(tool.definition.inputSchema.required?.includes('id'))
 })
 
+test('update tools require only id, never the body schema required fields', () => {
+  for (const tool of tools) {
+    if (tool.operation !== 'update') continue
+    assert.deepEqual(
+      tool.definition.inputSchema.required,
+      ['id'],
+      `${tool.definition.name} must require only id`,
+    )
+  }
+})
+
 test('tickets_find_all exposes a sort enum because ticket has sorting', () => {
   const tool = byName.get('confetti_tickets_find_all')
   assert.ok(tool)
@@ -980,7 +991,10 @@ function updateSchema(m: ModelDefinition): JsonSchemaObject {
   return {
     type: 'object',
     properties: { id: ID_SCHEMA, ...body.properties },
-    required: ['id', ...(body.required ?? [])],
+    // Only the identifier is required. A partial update must never mandate
+    // fields beyond it — inheriting the body schema's required list would force
+    // callers to resupply fields they aren't changing.
+    required: ['id'],
   }
 }
 
@@ -1051,7 +1065,7 @@ export function buildTools(): GeneratedTool[] {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/tools/definitions.ts`
-Expected: 14 tests PASS.
+Expected: 15 tests PASS.
 
 If `import type { ModelDefinition } from 'confetti'` fails to resolve, the type is re-exported through `confetti`'s `types/index.js` barrel; confirm with `node -e "import('confetti').then(m => console.log(Object.keys(m)))"` and adjust the import to the named export that exists.
 
