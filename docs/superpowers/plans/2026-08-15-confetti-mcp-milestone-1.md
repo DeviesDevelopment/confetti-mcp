@@ -2431,12 +2431,41 @@ git commit -m "build: multi-stage Dockerfile running as non-root"
 
 **Files:**
 - Create: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
+- Modify: `package.json` (the `test` script — see Step 0)
 
 **Interfaces:**
 - Consumes: `npm run lint`, `npm test`, `npm run build`, `Dockerfile`.
 - Produces: `deviesdevelopment/confetti-mcp` on Docker Hub, tagged on version tags.
 
 Requires two repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token scoped to read/write on this repository, not an account password).
+
+**The test suite hangs on failure, and CI is where that bites.** Tests that start a
+server call `server.close()` after their assertions with no `try/finally`, so a
+throwing assertion skips cleanup, leaks a listening handle, and `node --test`
+never exits. This was found empirically: forcing a failure required
+`--test-force-exit` to get any output at all. Locally it is a nuisance; in CI a
+genuine test failure would hang the job until the runner timeout rather than
+failing fast. Step 0 fixes it, and both workflows carry an explicit
+`timeout-minutes` as a second line of defence.
+
+- [ ] **Step 0: Stop a failing test from hanging the run**
+
+In `package.json`, change the `test` script from:
+
+```json
+"test": "node --import=tsx --test test/**/*.ts",
+```
+
+to:
+
+```json
+"test": "node --import=tsx --test --test-force-exit test/**/*.ts",
+```
+
+Verify: `npm test` still reports 100 passing. Then confirm the guard works —
+temporarily add `assert.equal(1, 2)` to any test, run `npm test`, and check that
+it **exits** with a failure rather than hanging. Remove the deliberate failure
+afterwards and report what you observed.
 
 - [ ] **Step 1: Create `.github/workflows/ci.yml`**
 
@@ -2451,6 +2480,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -2472,6 +2502,7 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -2499,6 +2530,7 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
