@@ -161,6 +161,22 @@ test('delete requests the record by id', async () => {
   scope.done()
 })
 
+test('an unknown field is rejected before the request goes out', async () => {
+  // Upstream Zod strips it, so this used to send an empty PUT and report
+  // success — the silent no-op a model can never detect.
+  const scope = nock(API)
+    .put('/events/5')
+    .reply(200, { data: { id: '5', type: 'events', attributes: {} } }, {
+      'content-type': 'application/json',
+    })
+
+  await assert.rejects(
+    () => callTool(tool('confetti_events_update'), { id: 5, titel: 'New Name' }, context),
+    /titel/,
+  )
+  assert.equal(scope.isDone(), false, 'nothing may be sent for an unknown field')
+})
+
 test('a missing id is rejected before the request goes out', async () => {
   await assert.rejects(() => callTool(tool('confetti_events_find'), {}, context), /id is required/)
 })

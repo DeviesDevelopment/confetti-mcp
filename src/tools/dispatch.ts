@@ -1,5 +1,6 @@
 import { resourceFor, type Operation } from '../confetti/resource-map.js'
 import type { GeneratedTool } from './definitions.js'
+import { parameterError, validateArgs } from './validate.js'
 
 export const DEFAULT_PAGE_SIZE = 25
 
@@ -37,10 +38,6 @@ function baseOptions(context: CallContext): AnyArgs {
     ...(context.apiHost ? { apiHost: context.apiHost } : {}),
     ...(context.apiProtocol ? { apiProtocol: context.apiProtocol } : {}),
   }
-}
-
-function parameterError(message: string, extra: Record<string, unknown> = {}): Error {
-  return Object.assign(new Error(message), { name: 'ParameterError' }, extra)
 }
 
 /**
@@ -187,6 +184,9 @@ async function dispatch(
   args: AnyArgs,
   context: CallContext,
 ): Promise<unknown> {
+  // Fail closed on the advertised contract before anything leaves the process.
+  validateArgs(tool, args)
+
   const resource = resourceFor(tool.modelKey) as unknown as Record<
     string,
     (...callArgs: unknown[]) => Promise<unknown>
