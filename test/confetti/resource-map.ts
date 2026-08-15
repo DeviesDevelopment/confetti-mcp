@@ -1,7 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import Confetti from 'confetti'
-import { RESOURCE_MAP, listResourceOperations } from '../../src/confetti/resource-map.js'
+import {
+  INCLUDE_PATHS,
+  RESOURCE_MAP,
+  includePathFor,
+  listResourceOperations,
+} from '../../src/confetti/resource-map.js'
 
 const STATIC_EXCLUDES = new Set(['length', 'name', 'prototype', 'models'])
 
@@ -43,6 +48,57 @@ test('operation counts per verb match the spec', () => {
     return acc
   }, {})
   assert.deepEqual(byVerb, { find: 18, findAll: 11, create: 13, update: 11, delete: 10 })
+})
+
+test('every include path is a path the event model really side-loads', () => {
+  const includes = new Set((Confetti.models.event as unknown as { includes: string[] }).includes)
+  for (const [modelKey, path] of Object.entries(INCLUDE_PATHS)) {
+    assert.ok(
+      includes.has(path),
+      `INCLUDE_PATHS.${modelKey} = "${path}" is not in Confetti.models.event.includes — the breadcrumb would send models down a dead path`,
+    )
+  }
+})
+
+test('include paths exist only for resources that have no list tool', () => {
+  const withFindAll = new Set(
+    listResourceOperations()
+      .filter(({ operation }) => operation === 'findAll')
+      .map(({ modelKey }) => modelKey),
+  )
+  for (const modelKey of Object.keys(INCLUDE_PATHS)) {
+    assert.ok(modelKey in RESOURCE_MAP, `INCLUDE_PATHS.${modelKey} names no mapped resource`)
+    assert.ok(
+      !withFindAll.has(modelKey as keyof typeof RESOURCE_MAP),
+      `${modelKey} has a find_all tool; the include breadcrumb is misleading`,
+    )
+  }
+})
+
+test('the list-less resources are exactly the ones we expect', () => {
+  const withFindAll = new Set(
+    listResourceOperations()
+      .filter(({ operation }) => operation === 'findAll')
+      .map(({ modelKey }) => modelKey),
+  )
+  const listless = Object.keys(RESOURCE_MAP).filter(
+    (modelKey) => !withFindAll.has(modelKey as keyof typeof RESOURCE_MAP),
+  )
+  assert.deepEqual(listless, [
+    'form',
+    'formField',
+    'speaker',
+    'organiser',
+    'scheduleItem',
+    'sponsor',
+    'sponsorLevel',
+  ])
+  // sponsor and sponsorLevel appear in no event include: their ids can only
+  // come from a create response, and pretending otherwise would be a lie.
+  assert.equal(includePathFor('sponsor'), undefined)
+  assert.equal(includePathFor('sponsorLevel'), undefined)
+  assert.equal(includePathFor('speaker'), 'speakers')
+  assert.equal(includePathFor('event'), undefined)
 })
 
 test('every create/update operation has a schema in the registry', () => {
