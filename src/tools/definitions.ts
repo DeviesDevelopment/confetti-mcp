@@ -120,7 +120,10 @@ function updateSchema(m: ModelDefinition): JsonSchemaObject {
   return {
     type: 'object',
     properties: { id: ID_SCHEMA, ...body.properties },
-    required: ['id', ...(body.required ?? [])],
+    // Only the identifier is required. A partial update must never mandate
+    // fields beyond it — inheriting the body schema's required list would force
+    // callers to resupply fields they aren't changing.
+    required: ['id'],
   }
 }
 

@@ -107,3 +107,14 @@ test('descriptions embed a sample payload for read tools', () => {
   assert.match(tool.definition.description, /Example/)
   assert.match(tool.definition.description, /startDate/)
 })
+
+test('update tools require only id, never the body schema required fields', () => {
+  for (const tool of tools) {
+    if (tool.operation !== 'update') continue
+    assert.deepEqual(
+      tool.definition.inputSchema.required,
+      ['id'],
+      `${tool.definition.name} must require only id`,
+    )
+  }
+})
