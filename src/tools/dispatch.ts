@@ -19,10 +19,34 @@ function baseOptions(context: CallContext): AnyArgs {
   }
 }
 
-function requireId(args: AnyArgs): string | number {
+function parameterError(message: string, extra: Record<string, unknown> = {}): Error {
+  return Object.assign(new Error(message), { name: 'ParameterError' }, extra)
+}
+
+/**
+ * Ids are interpolated raw into the upstream URL path (`${model.path}/${id}`)
+ * and node-fetch's WHATWG URL parsing then collapses dot segments. An id of
+ * `../payments/7` on confetti_events_find issues `GET /payments/7` — with the
+ * caller's real key attached — which defeats the enforced ?resources= filter
+ * on every id-bearing tool, delete included. Allowlisting the characters
+ * Confetti actually uses (numeric ids and hashids) closes that by construction;
+ * a denylist of `/ \ ? #` would still let percent-encodings and unicode
+ * separators through.
+ */
+const ID_PATTERN = /^[A-Za-z0-9_-]+$/
+
+function requireId(args: AnyArgs): string {
   const id = args['id']
-  if (typeof id === 'string' || typeof id === 'number') return id
-  throw Object.assign(new Error('id is required'), { name: 'ParameterError' })
+  if (typeof id !== 'string' && typeof id !== 'number') {
+    throw parameterError('id is required')
+  }
+  const asString = String(id)
+  if (!ID_PATTERN.test(asString)) {
+    throw parameterError(
+      `id must be a single record identifier made of letters, digits, "-" or "_" — got ${JSON.stringify(asString)}. Path segments, empty values and query characters are not allowed.`,
+    )
+  }
+  return asString
 }
 
 function withDefaultPage(page: unknown): AnyArgs {

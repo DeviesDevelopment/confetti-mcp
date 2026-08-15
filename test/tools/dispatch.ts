@@ -107,6 +107,86 @@ test('a missing id is rejected before the request goes out', async () => {
   await assert.rejects(() => callTool(tool('confetti_events_find'), {}, context), /id is required/)
 })
 
+test('a traversal id cannot reach another resource', async () => {
+  // Reproduces the verified bypass: a connection scoped ?resources=events
+  // called confetti_events_find with '../payments/7' and got the payment back,
+  // because WHATWG URL parsing collapses the dot segment before the request.
+  const traversed = nock(API)
+    .get('/payments/7')
+    .query(true)
+    .reply(200, { data: { id: '7', type: 'payments', attributes: { amount: 100 } } }, {
+      'content-type': 'application/json',
+    })
+
+  await assert.rejects(
+    () => callTool(tool('confetti_events_find'), { id: '../payments/7' }, context),
+    (error: Error) => {
+      assert.equal(error.name, 'ParameterError')
+      assert.match(error.message, /id/)
+      return true
+    },
+  )
+
+  assert.equal(traversed.isDone(), false, 'no request may leave for the traversed path')
+})
+
+test('a traversal id cannot delete another resource', async () => {
+  const traversed = nock(API).delete('/webhooks/9').query(true).reply(204, '')
+
+  await assert.rejects(
+    () => callTool(tool('confetti_pages_delete'), { id: '../webhooks/9' }, context),
+    (error: Error) => {
+      assert.equal(error.name, 'ParameterError')
+      return true
+    },
+  )
+
+  assert.equal(traversed.isDone(), false, 'a scoped connection must not reach another resource')
+})
+
+test('an empty or whitespace id is rejected instead of hitting the collection route', async () => {
+  const collection = nock(API).get('/events/').query(true).reply(200, { data: [] }, {
+    'content-type': 'application/json',
+  })
+
+  for (const id of ['', '   ']) {
+    await assert.rejects(
+      () => callTool(tool('confetti_events_find'), { id }, context),
+      (error: Error) => {
+        assert.equal(error.name, 'ParameterError')
+        return true
+      },
+    )
+  }
+
+  assert.equal(collection.isDone(), false)
+})
+
+test('ids with query or fragment characters are rejected', async () => {
+  for (const id of ['7?x=1', '7#frag', '..%2Fpayments%2F7', 'a b']) {
+    await assert.rejects(
+      () => callTool(tool('confetti_events_find'), { id }, context),
+      (error: Error) => {
+        assert.equal(error.name, 'ParameterError')
+        return true
+      },
+      `id ${JSON.stringify(id)} must be rejected`,
+    )
+  }
+})
+
+test('ordinary numeric and hashid ids still pass', async () => {
+  const scope = nock(API)
+    .get('/events/aB3-x_9')
+    .query(true)
+    .reply(200, { data: { id: 'aB3-x_9', type: 'events', attributes: { name: 'Hashid' } } }, {
+      'content-type': 'application/json',
+    })
+
+  await callTool(tool('confetti_events_find'), { id: 'aB3-x_9' }, context)
+  scope.done()
+})
+
 test('upstream 404 propagates as NotFoundError', async () => {
   nock(API)
     .get('/events/999')
