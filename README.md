@@ -139,6 +139,9 @@ weaker carrier. An empty value in carriers 2–4 falls through to the next.
 docker run -p 8080:8080 deviesdevelopment/confetti-mcp
 ```
 
+> Published from the first tagged release onward. Until then, build it locally
+> with the commands below.
+
 Or build the image from the `Dockerfile` in this repo:
 
 ```bash
@@ -152,6 +155,17 @@ docker run -p 8080:8080 confetti-mcp
 | `CONFETTI_API_HOST` | `api.confetti.events` | Upstream API host |
 | `CONFETTI_API_PROTOCOL` | `https` | Upstream protocol |
 | `LOG_LEVEL` | `info` | Accepted but not yet wired to log output; reserved |
+
+`GET /` is an unauthenticated health endpoint, suitable for a load balancer or
+container probe. It reports the server name and version and touches nothing
+upstream:
+
+```bash
+curl https://your-host/
+# {"status":"ok","server":"confetti-mcp","version":"0.1.0","usage":"POST /mcp with an \"Authorization: Bearer <confetti-api-key>\" header."}
+```
+
+The image's own `HEALTHCHECK` uses this endpoint.
 
 The server never reads an API key from its own environment — keys always come
 from the caller.
