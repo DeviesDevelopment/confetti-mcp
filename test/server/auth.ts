@@ -18,9 +18,10 @@ test('reads apiKey path param', () => {
   assert.equal(extractApiKey({ headers: {}, params: { apiKey: 'sk_path' } }), 'sk_path')
 })
 
-test('Authorization wins over X-Api-Key and path', () => {
+test('Authorization wins over X-Api-Key, query, and path', () => {
   const key = extractApiKey({
     headers: { authorization: 'Bearer sk_header', 'x-api-key': 'sk_alias' },
+    query: { apiKey: 'sk_query' },
     params: { apiKey: 'sk_path' },
   })
   assert.equal(key, 'sk_header')
