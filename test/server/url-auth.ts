@@ -65,7 +65,7 @@ test('an unknown query parameter is still ignored rather than rejected', async (
   server.close()
 })
 
-test('the api key never appears in stdout or stderr', async () => {
+test('no request-path logging exists that could capture the api key', async () => {
   const { server, port } = await startServer()
   const captured: string[] = []
   const originalLog = console.log
@@ -85,4 +85,34 @@ test('the api key never appears in stdout or stderr', async () => {
     !captured.join('\n').includes('sk_super_secret_value'),
     `api key leaked into logs: ${captured.join('\n')}`,
   )
+})
+
+test('the api key never appears in an error response body', async () => {
+  const { server, port } = await startServer()
+
+  // ?ops=frobnicate makes ToolFilterError produce a 400 whose message quotes the
+  // offending value. If an error message ever widened to include the URL or the
+  // whole query, the path-carried key would ride along into the client's hands.
+  const res = await fetch(`http://127.0.0.1:${port}/mcp/k/sk_super_secret_value?ops=frobnicate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  })
+
+  assert.equal(res.status, 400)
+  const body = await res.text()
+  assert.ok(!body.includes('sk_super_secret_value'), `api key leaked into the error body: ${body}`)
+
+  server.close()
+})
+
+test('the api key never appears in a successful response body', async () => {
+  const { server, port } = await startServer()
+
+  const res = await rpc(port, '/mcp/k/sk_super_secret_value?ops=read')
+  assert.equal(res.status, 200)
+  const body = await res.text()
+  assert.ok(!body.includes('sk_super_secret_value'), 'api key leaked into a successful response')
+
+  server.close()
 })
