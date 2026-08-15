@@ -1,7 +1,11 @@
-import { test } from 'node:test'
+import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
+import nock from 'nock'
 import { toolErrorMessage } from '../../src/tools/errors.js'
+import { buildTools } from '../../src/tools/definitions.js'
+import { callTool } from '../../src/tools/dispatch.js'
 
 function named(name: string, message: string, extra: Record<string, unknown> = {}): Error {
   const error = new Error(message)
@@ -214,6 +218,105 @@ test('leaves a message that merely contains a status untouched by the mapper', (
 /* ------------------------------------------------------------------ *
  * Upstream timeout
  * ------------------------------------------------------------------ */
+
+/* ------------------------------------------------------------------ *
+ * The coupling itself: names produced by code this repo does not own
+ * ------------------------------------------------------------------ */
+
+/**
+ * Everything above this line hand-builds the error it classifies, so it proves
+ * the switch works on the names it is given — not that those are the names the
+ * real dependency produces. `confetti` exports none of its error classes
+ * (`exports` maps only "."), and the name every validation failure actually
+ * carries comes from zod, a package this repo does not even depend on. Before
+ * these tests only `NotFoundError` was ever driven through the real package, so
+ * a bump swapping validation libraries would have silently degraded every
+ * invalid-parameter response to the generic branch.
+ */
+
+const API = 'https://api.confetti.events'
+const tools = new Map(buildTools().map((tool) => [tool.definition.name, tool]))
+const context = { apiKey: 'sk_test_key' }
+
+function tool(name: string) {
+  const found = tools.get(name)
+  assert.ok(found, `${name} not generated`)
+  return found
+}
+
+async function rejection(name: string, args: Record<string, unknown>): Promise<unknown> {
+  try {
+    await callTool(tool(name), args, context)
+  } catch (error) {
+    return error
+  }
+  assert.fail(`${name} was expected to reject`)
+}
+
+afterEach(() => {
+  nock.cleanAll()
+})
+
+test('a real upstream validation failure carries the ZodError name this file maps', async () => {
+  // No nock scope: the rejection happens in confetti's own `.parse`, before any
+  // request. This is the only place the ZodError coupling is pinned against the
+  // package that actually throws it.
+  const error = await rejection('confetti_events_find_all', { page: { size: 'not-a-number' } })
+
+  assert.equal((error as Error).name, 'ZodError', 'the upstream validation error changed its name')
+  const message = toolErrorMessage(error, 'confetti_events_find_all', context.apiKey)
+  assert.match(message, /Invalid parameters for 'confetti_events_find_all'/)
+  assert.match(message, /page\.size/, 'the issues array must survive as one line per issue')
+})
+
+test('a real upstream 400 carries the ParameterError name this file maps', async () => {
+  nock(API)
+    .put('/events/7')
+    .query(true)
+    .reply(400, { errors: [{ detail: 'startDate must be an ISO date' }] }, {
+      'content-type': 'application/json',
+    })
+
+  const error = await rejection('confetti_events_update', { id: 7, name: 'Renamed' })
+
+  assert.equal((error as Error).name, 'ParameterError')
+  const message = toolErrorMessage(error, 'confetti_events_update', context.apiKey)
+  assert.match(message, /Invalid parameters for 'confetti_events_update'/)
+  assert.match(message, /startDate must be an ISO date/, 'the attached body is the whole detail')
+})
+
+test('a real upstream 404 carries the NotFoundError name this file maps', async () => {
+  nock(API)
+    .get('/events/999')
+    .query(true)
+    .reply(404, { message: 'Event not found' }, { 'content-type': 'application/json' })
+
+  const error = await rejection('confetti_events_find', { id: 999 })
+
+  assert.equal((error as Error).name, 'NotFoundError')
+  assert.match(
+    toolErrorMessage(error, 'confetti_events_find', context.apiKey),
+    /Not found in 'confetti_events_find'/,
+  )
+})
+
+test('the package still defines every error name this file switches on', () => {
+  // `OperationNotFoundError` is thrown only when a model loses an operation
+  // schema, which no tool call can provoke, so it has no integration test of
+  // its own — but it is still a name in the switch, and the switch is coupled
+  // to classes that are not exported and therefore not type-checked.
+  const require = createRequire(import.meta.url)
+  const entry = require.resolve('confetti')
+  const source = readFileSync(new URL('errors.js', new URL(`file://${entry}`)), 'utf8')
+
+  for (const name of ['ParameterError', 'NotFoundError', 'OperationNotFoundError']) {
+    assert.match(
+      source,
+      new RegExp(`this\\.name = '${name}'`),
+      `confetti no longer produces the name "${name}" that errors.ts classifies on`,
+    )
+  }
+})
 
 test('an upstream timeout reads as a timeout, not as invalid parameters', () => {
   // dispatch names the deadline rejection ParameterError so it reaches the
