@@ -1,8 +1,10 @@
 # confetti-mcp — Design
 
 **Date:** 2026-08-15
-**Status:** Approved, pending implementation plan
+**Status:** Approved
 **Repo:** `DeviesDevelopment/confetti-mcp` (public, MIT)
+**Milestone 1 scope:** working server, tests, and a published Docker Hub image.
+Hosting is explicitly out of scope until that lands.
 
 ## Summary
 
@@ -47,15 +49,20 @@ Docker Hub credentials are the one secret here: a scoped access token stored as 
 repository secret. Fork PRs cannot read it (GitHub default), and the publish job
 is gated on tag pushes, not PRs.
 
-### `DeviesDevelopment/confetti-mcp-deploy` — private
+### `DeviesDevelopment/confetti-mcp-deploy` — private, deferred
 
-Bicep for the Azure App Service, custom domain, and app settings; plus a deploy
-workflow that pins an image tag and rolls it out via Azure OIDC federated
-credentials (the same mechanism KleerMCP already uses — no stored passwords).
+**Not in the current scope.** The first milestone ends at a working image
+published to Docker Hub; hosting is decided after that lands and the server has
+been exercised by `docker run`.
 
-Release is `gh workflow run deploy.yml -f tag=v1.2.0` from the private repo. No
-cross-repo token is needed in either direction. Resource names, topology, and
-deploy logs never become public.
+When it happens: Bicep for the Azure App Service, custom domain, and app
+settings; plus a deploy workflow that pins an image tag and rolls it out via
+Azure OIDC federated credentials (the same mechanism KleerMCP already uses — no
+stored passwords). Release is `gh workflow run deploy.yml -f tag=v1.2.0` from the
+private repo. No cross-repo token is needed in either direction. Resource names,
+topology, and deploy logs never become public.
+
+Nothing in the public repo assumes Azure, so deferring this costs nothing later.
 
 This mirrors the standard shape for open-source products with a privately-hosted
 instance (Sentry, Cal.com, PostHog, Supabase all split this way).
