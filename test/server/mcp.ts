@@ -179,6 +179,39 @@ test('a failed tool call is logged as one structured line, without key, args or 
   assert.ok(!all.includes('Event not found'), 'an error message can carry caller data and must not be logged')
 })
 
+test('an upstream 5xx is logged with its status, so an incident is visible', async () => {
+  const { server, port } = await startServer()
+  nock(API).get('/events').query(true).reply(503, 'upstream down for sk_test_key')
+
+  const lines: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+    return original(chunk as string, ...(rest as []))
+  }) as typeof process.stderr.write
+
+  try {
+    const { client, transport } = await connect(port)
+    await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+    await transport.close()
+  } finally {
+    process.stderr.write = original
+  }
+  server.close()
+
+  const failure = lines
+    .join('')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .find((entry) => entry.msg === 'tool_call_failed')
+
+  assert.ok(failure, 'expected a failure line')
+  assert.equal(failure.upstreamStatus, 503, 'error name alone cannot tell an outage from a bad argument')
+  assert.ok(!lines.join('').includes('sk_test_key'), 'the api key must never reach a log')
+})
+
 test('a successful tool call logs nothing', async () => {
   const { server, port } = await startServer()
   nock(API).get('/events').query(true).reply(200, { data: [] }, { 'content-type': 'application/json' })

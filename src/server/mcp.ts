@@ -88,6 +88,19 @@ export function newRequestId(): string {
   return randomUUID()
 }
 
+/**
+ * The one thing worth extracting from an error message, and the only safe one.
+ * An unmapped upstream failure arrives as an `Error` whose entire message is
+ * `HTTP 503`, so without this an outage and a rejected argument both log as
+ * `"error":"Error"`. The pattern is anchored to the whole message on purpose:
+ * it matches only when there is nothing else in it to leak.
+ */
+function upstreamStatus(error: unknown): number | undefined {
+  if (!(error instanceof Error)) return undefined
+  const status = /^HTTP (\d{3})$/.exec(error.message.trim())?.[1]
+  return status === undefined ? undefined : Number(status)
+}
+
 export function createMcpServer(options: {
   tools: GeneratedTool[]
   context: CallContext
@@ -145,10 +158,12 @@ export function createMcpServer(options: {
         content: [{ type: 'text' as const, text: JSON.stringify(result) }],
       }
     } catch (error) {
+      const status = upstreamStatus(error)
       logEvent('error', 'tool_call_failed', {
         requestId,
         tool: name,
         error: error instanceof Error ? error.name : typeof error,
+        ...(status === undefined ? {} : { upstreamStatus: status }),
         durationMs: Date.now() - startedAt,
       })
       return {
