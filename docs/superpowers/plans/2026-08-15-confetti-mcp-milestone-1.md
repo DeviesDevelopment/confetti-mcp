@@ -320,7 +320,16 @@ git commit -m "feat: project scaffold with health endpoint"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `extractApiKey(req: { headers: Record<string, unknown>; params?: Record<string, string> }): string | undefined`.
+- Produces: `extractApiKey(req: { headers: Record<string, unknown>; params?: Record<string, string>; query?: Record<string, unknown> }): string | undefined`.
+
+Four carriers, in precedence order: `Authorization: Bearer`, `X-Api-Key`,
+`?apiKey=`, then the `:apiKey` path segment. The two URL-carried fallbacks exist
+because Claude Desktop's chat surface and claude.ai web use the custom-connector
+UI, which accepts only a URL plus optional OAuth credentials — no headers.
+Desktop's Code tab reads `.mcp.json` and handles headers natively.
+
+A present-but-malformed `Authorization` header returns `undefined` rather than
+falling through; an empty value in any other carrier falls through to the next.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -343,16 +352,40 @@ test('reads X-Api-Key header', () => {
   assert.equal(extractApiKey({ headers: { 'x-api-key': 'sk_xyz' } }), 'sk_xyz')
 })
 
+test('reads apiKey query parameter', () => {
+  assert.equal(extractApiKey({ headers: {}, query: { apiKey: 'sk_query' } }), 'sk_query')
+})
+
 test('reads apiKey path param', () => {
   assert.equal(extractApiKey({ headers: {}, params: { apiKey: 'sk_path' } }), 'sk_path')
 })
 
-test('Authorization wins over X-Api-Key and path', () => {
+test('Authorization wins over X-Api-Key, query, and path', () => {
   const key = extractApiKey({
     headers: { authorization: 'Bearer sk_header', 'x-api-key': 'sk_alias' },
+    query: { apiKey: 'sk_query' },
     params: { apiKey: 'sk_path' },
   })
   assert.equal(key, 'sk_header')
+})
+
+test('X-Api-Key wins over the query parameter', () => {
+  const key = extractApiKey({ headers: { 'x-api-key': 'sk_alias' }, query: { apiKey: 'sk_query' } })
+  assert.equal(key, 'sk_alias')
+})
+
+test('query parameter wins over the path param', () => {
+  const key = extractApiKey({ headers: {}, query: { apiKey: 'sk_query' }, params: { apiKey: 'sk_path' } })
+  assert.equal(key, 'sk_query')
+})
+
+test('a repeated apiKey query parameter takes the first value', () => {
+  assert.equal(extractApiKey({ headers: {}, query: { apiKey: ['sk_one', 'sk_two'] } }), 'sk_one')
+})
+
+test('an empty apiKey query parameter falls through to the path param', () => {
+  const key = extractApiKey({ headers: {}, query: { apiKey: '  ' }, params: { apiKey: 'sk_path' } })
+  assert.equal(key, 'sk_path')
 })
 
 test('X-Api-Key wins over path', () => {
@@ -388,6 +421,7 @@ Expected: FAIL — cannot find module `../../src/server/auth.js`.
 export interface ApiKeyCarrier {
   headers: Record<string, unknown>
   params?: Record<string, string>
+  query?: Record<string, unknown>
 }
 
 function firstString(value: unknown): string | undefined {
@@ -404,21 +438,26 @@ function clean(value: string | undefined): string | undefined {
 /**
  * Extracts the caller's Confetti API key.
  *
- * Precedence: Authorization: Bearer, then X-Api-Key, then the :apiKey path
- * segment. The path form exists only for clients that cannot set headers and
- * is documented as discouraged.
+ * Precedence: Authorization: Bearer, then X-Api-Key, then ?apiKey=, then the
+ * :apiKey path segment. The two URL-carried forms exist for clients that cannot
+ * set headers — Claude Desktop's chat surface and claude.ai web both use the
+ * custom-connector UI, which accepts only a URL and optional OAuth credentials.
+ * Both are documented as second-class.
  */
 export function extractApiKey(req: ApiKeyCarrier): string | undefined {
   const authorization = clean(firstString(req.headers['authorization']))
   if (authorization) {
+    // A present but malformed Authorization header is an error, not an
+    // invitation to try a weaker carrier.
     const match = /^Bearer[ ]+(.+)$/i.exec(authorization)
-    const token = clean(match?.[1])
-    if (token) return token
-    return undefined
+    return clean(match?.[1])
   }
 
   const alias = clean(firstString(req.headers['x-api-key']))
   if (alias) return alias
+
+  const query = clean(firstString(req.query?.['apiKey']))
+  if (query) return query
 
   return clean(req.params?.['apiKey'])
 }
@@ -427,7 +466,7 @@ export function extractApiKey(req: ApiKeyCarrier): string | undefined {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/server/auth.ts`
-Expected: 10 tests PASS.
+Expected: 15 tests PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -739,6 +778,17 @@ test('events_update requires id alongside the update fields', () => {
   assert.ok(tool.definition.inputSchema.required?.includes('id'))
 })
 
+test('update tools require only id, never the body schema required fields', () => {
+  for (const tool of tools) {
+    if (tool.operation !== 'update') continue
+    assert.deepEqual(
+      tool.definition.inputSchema.required,
+      ['id'],
+      `${tool.definition.name} must require only id`,
+    )
+  }
+})
+
 test('tickets_find_all exposes a sort enum because ticket has sorting', () => {
   const tool = byName.get('confetti_tickets_find_all')
   assert.ok(tool)
@@ -941,7 +991,10 @@ function updateSchema(m: ModelDefinition): JsonSchemaObject {
   return {
     type: 'object',
     properties: { id: ID_SCHEMA, ...body.properties },
-    required: ['id', ...(body.required ?? [])],
+    // Only the identifier is required. A partial update must never mandate
+    // fields beyond it — inheriting the body schema's required list would force
+    // callers to resupply fields they aren't changing.
+    required: ['id'],
   }
 }
 
@@ -1012,7 +1065,7 @@ export function buildTools(): GeneratedTool[] {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/tools/definitions.ts`
-Expected: 14 tests PASS.
+Expected: 15 tests PASS.
 
 If `import type { ModelDefinition } from 'confetti'` fails to resolve, the type is re-exported through `confetti`'s `types/index.js` barrel; confirm with `node -e "import('confetti').then(m => console.log(Object.keys(m)))"` and adjust the import to the named export that exists.
 
@@ -1262,7 +1315,7 @@ git commit -m "feat: filter the tool set by ops and resources"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `toolErrorMessage(error: unknown, toolName: string): string`.
+- Produces: `toolErrorMessage(error: unknown, toolName: string, secret?: string): string`. The optional `secret` is the caller's API key, exact-matched out of the returned message; Task 9 must pass `options.context.apiKey`.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1314,10 +1367,32 @@ test('handles non-Error throwables', () => {
   assert.match(message, /a bare string/)
 })
 
-test('never echoes an api key that appears in the message', () => {
+test('never echoes an api-key-shaped token that appears in the message', () => {
   const message = toolErrorMessage(named('ParameterError', 'bad key sk_live_secret123'), 'confetti_events_find')
   assert.ok(!message.includes('sk_live_secret123'), 'api-key-shaped tokens must be redacted')
   assert.match(message, /\[redacted\]/)
+})
+
+test('redacts the caller api key exactly, whatever its shape', () => {
+  const message = toolErrorMessage(named('ParameterError', 'rejected key my-key here'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'), 'the caller key must not survive into the message')
+  assert.match(message, /\[redacted\]/)
+})
+
+test('redacts every occurrence of the caller api key', () => {
+  const message = toolErrorMessage(named('ParameterError', 'my-key then my-key again'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'))
+})
+
+test('redacts the caller key even from an unclassified error', () => {
+  const message = toolErrorMessage(named('TypeError', 'boom my-key'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'))
+  assert.match(message, /\[TypeError\]/)
+})
+
+test('an empty or trivially short secret does not corrupt the message', () => {
+  assert.match(toolErrorMessage(named('ParameterError', 'plain failure'), 'confetti_events_find', ''), /plain failure/)
+  assert.match(toolErrorMessage(named('ParameterError', 'plain failure'), 'confetti_events_find', 'ab'), /plain failure/)
 })
 ```
 
@@ -1335,9 +1410,17 @@ Expected: FAIL — cannot find module `../../src/tools/errors.js`.
  * throws does set `name`, so classification goes by that instead of instanceof.
  */
 
-/** Redacts anything shaped like a Confetti API key before it reaches a client. */
-function redact(text: string): string {
-  return text.replace(/\bsk_[A-Za-z0-9_-]{4,}/g, '[redacted]')
+/**
+ * Redacts the caller's key, plus anything shaped like one, before it reaches a
+ * client. Confetti enforces no key format (`apiKey: z.string()`), so the shape
+ * pattern is only a secondary net — exact-matching the caller's own key is what
+ * actually holds the "key never reaches a client" constraint.
+ */
+function redact(text: string, secret?: string): string {
+  const byShape = text.replace(/\bsk_[A-Za-z0-9_-]{4,}/g, '[redacted]')
+  // Guard the length: replaceAll('') inserts between every character.
+  if (!secret || secret.length < 4) return byShape
+  return byShape.replaceAll(secret, '[redacted]')
 }
 
 function messageOf(error: unknown): string {
@@ -1350,26 +1433,36 @@ function nameOf(error: unknown): string {
   return error instanceof Error ? error.name : typeof error
 }
 
-export function toolErrorMessage(error: unknown, toolName: string): string {
-  const detail = redact(messageOf(error))
-  switch (nameOf(error)) {
+export function toolErrorMessage(error: unknown, toolName: string, secret?: string): string {
+  const detail = messageOf(error)
+  const name = nameOf(error)
+
+  let message: string
+  switch (name) {
     case 'ParameterError':
     case 'ZodError':
-      return `Invalid parameters for '${toolName}': ${detail}`
+      message = `Invalid parameters for '${toolName}': ${detail}`
+      break
     case 'NotFoundError':
-      return `Not found in '${toolName}': ${detail}`
+      message = `Not found in '${toolName}': ${detail}`
+      break
     case 'OperationNotFoundError':
-      return `Unsupported operation '${toolName}': ${detail}`
+      message = `Unsupported operation '${toolName}': ${detail}`
+      break
     default:
-      return `Error in '${toolName}': [${nameOf(error)}] ${detail}`
+      message = `Error in '${toolName}': [${name}] ${detail}`
   }
+
+  // Redact the assembled message, not just the detail, so nothing reaching the
+  // output via the error's name can bypass it.
+  return redact(message, secret)
 }
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/tools/errors.ts`
-Expected: 7 tests PASS.
+Expected: 11 tests PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -1552,10 +1645,38 @@ function baseOptions(context: CallContext): AnyArgs {
   }
 }
 
+/**
+ * Keys that control the upstream connection itself. They are never accepted
+ * from tool arguments: `findAll` and `find` merge caller args and connection
+ * options into one object, so without this a caller could set apiHost and
+ * redirect the request — with the real API key attached — to a host of their
+ * choosing. Spread order alone is not enough, because CallContext permits
+ * apiHost/apiProtocol to be absent, leaving nothing to overwrite the caller's
+ * value with.
+ */
+const RESERVED_OPTION_KEYS = ['apiKey', 'apiHost', 'apiProtocol', 'raw'] as const
+
+function stripReserved(args: AnyArgs): AnyArgs {
+  const clean = { ...args }
+  for (const key of RESERVED_OPTION_KEYS) delete clean[key]
+  return clean
+}
+
 function requireId(args: AnyArgs): string | number {
   const id = args['id']
   if (typeof id === 'string' || typeof id === 'number') return id
   throw Object.assign(new Error('id is required'), { name: 'ParameterError' })
+}
+
+/**
+ * Returns args without `id`. Written as copy-then-delete rather than the
+ * `const { id: _, ...rest }` idiom because this repo's no-unused-vars config
+ * sets argsIgnorePattern but not ignoreRestSiblings.
+ */
+function withoutId(args: AnyArgs): AnyArgs {
+  const rest = { ...args }
+  delete rest['id']
+  return rest
 }
 
 function withDefaultPage(page: unknown): AnyArgs {
@@ -1575,22 +1696,23 @@ export async function callTool(
   const options = baseOptions(context)
 
   switch (tool.operation) {
+    // Only findAll and find merge caller args into the options object, so only
+    // they need stripReserved. create/update pass args as a structurally
+    // separate JSON body, where stripping would remove legitimate fields.
     case 'findAll': {
-      const { page, ...rest } = args
+      const { page, ...rest } = stripReserved(args)
       return resource['findAll']!({ ...rest, page: withDefaultPage(page), ...options })
     }
     case 'find': {
       const id = requireId(args)
-      const { id: _ignored, ...rest } = args
-      return resource['find']!(id, { ...rest, ...options })
+      return resource['find']!(id, { ...stripReserved(withoutId(args)), ...options })
     }
     case 'create': {
       return resource['create']!(args, options)
     }
     case 'update': {
       const id = requireId(args)
-      const { id: _ignored, ...body } = args
-      return resource['update']!(id, body, options)
+      return resource['update']!(id, withoutId(args), options)
     }
     case 'delete': {
       const id = requireId(args)
@@ -1603,7 +1725,7 @@ export async function callTool(
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/tools/dispatch.ts`
-Expected: 10 tests PASS.
+Expected: 13 tests PASS.
 
 If the query-string assertions fail, print the intercepted URL with `nock.recorder.rec()` and adjust the expected `page[size]` / `filter[...]` bracket spelling to match what `qs.stringify` actually emits. Do not change the production code to match a guess.
 
@@ -1734,6 +1856,66 @@ test('an unknown tool name returns an isError result', async () => {
   server.close()
 })
 
+test('a filtered-out tool is refused when called, not merely hidden from the list', async () => {
+  const { server, port } = await startServer()
+  const { client, transport } = await connect(port, '/mcp?ops=read')
+
+  const { tools } = await client.listTools()
+  assert.equal(
+    tools.find((t) => t.name === 'confetti_pages_delete'),
+    undefined,
+    'a read-only connection must not list a delete tool',
+  )
+
+  // The filter must be enforced, not advisory: naming the tool directly must fail.
+  const result = await client.callTool({ name: 'confetti_pages_delete', arguments: { id: 1 } })
+  assert.equal(result.isError, true, 'a read-only connection must refuse a delete call')
+  const content = result.content as Array<{ type: string; text: string }>
+  assert.match(content[0]!.text, /not available on this connection/)
+
+  await transport.close()
+  server.close()
+})
+
+test('every listed tool on a filtered connection belongs to the requested ops', async () => {
+  const { server, port } = await startServer()
+  const { client, transport } = await connect(port, '/mcp?ops=read')
+
+  const { tools } = await client.listTools()
+  assert.equal(tools.length, 29)
+  for (const tool of tools) {
+    assert.match(
+      tool.name,
+      /_(find|find_all)$/,
+      `${tool.name} is not a read operation but was listed on a ?ops=read connection`,
+    )
+  }
+
+  await transport.close()
+  server.close()
+})
+
+test('tool arguments cannot override the connection api key or host', async () => {
+  const { server, port } = await startServer()
+  const legit = nock(API, { reqheaders: { authorization: 'apikey sk_test_key' } })
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+  const evil = nock('http://evil.example.com').get('/events').query(true).reply(200, { data: [] })
+
+  const { client, transport } = await connect(port)
+  await client.callTool({
+    name: 'confetti_events_find_all',
+    arguments: { apiKey: 'ATTACKER_KEY', apiHost: 'evil.example.com', apiProtocol: 'http' },
+  })
+
+  assert.ok(legit.isDone(), 'the trusted connection context must win over tool arguments')
+  assert.equal(evil.isDone(), false, 'tool arguments must not be able to redirect the upstream call')
+
+  await transport.close()
+  server.close()
+})
+
 test('a request with no api key is rejected with 401', async () => {
   const { server, port } = await startServer()
   const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
@@ -1796,6 +1978,13 @@ export const SERVER_VERSION = '0.1.0'
 /** All 63 tools, generated once. Definition building walks every Zod schema. */
 const ALL_TOOLS = buildTools()
 
+/**
+ * Every tool name that exists at all, regardless of filtering. Used only to
+ * tell "this tool was filtered out of your connection" apart from "no such
+ * tool", so a filtered caller gets an actionable message.
+ */
+const ALL_TOOL_NAMES = new Set(ALL_TOOLS.map((tool) => tool.definition.name))
+
 /** Filtered tool sets are memoised per normalised query. */
 const toolSetCache = new Map<string, GeneratedTool[]>()
 
@@ -1825,9 +2014,16 @@ export function createMcpServer(options: { tools: GeneratedTool[]; context: Call
     const name = request.params.name
     const tool = byName.get(name)
     if (!tool) {
+      // `byName` is built from the FILTERED set, so a tool excluded by
+      // ?ops= / ?resources= is refused here and not merely hidden from
+      // tools/list. Without this the filter would be advisory: a ?ops=read
+      // connection could still invoke a delete by naming it directly.
+      const text = ALL_TOOL_NAMES.has(name)
+        ? `Tool '${name}' is not available on this connection — its operation or resource is excluded by the ?ops= / ?resources= filter in the connect URL.`
+        : `Unknown tool '${name}'.`
       return {
         isError: true,
-        content: [{ type: 'text' as const, text: `Unknown tool '${name}'.` }],
+        content: [{ type: 'text' as const, text }],
       }
     }
 
@@ -1839,7 +2035,10 @@ export function createMcpServer(options: { tools: GeneratedTool[]; context: Call
     } catch (error) {
       return {
         isError: true,
-        content: [{ type: 'text' as const, text: toolErrorMessage(error, name) }],
+        // The caller's key is passed so it can be exact-matched out of the
+        // message. Confetti enforces no key format, so shape-matching alone
+        // would not hold the "key never reaches a client" constraint.
+        content: [{ type: 'text' as const, text: toolErrorMessage(error, name, options.context.apiKey) }],
       }
     }
   })
@@ -1882,7 +2081,11 @@ export function createApp(config: Config): express.Express {
   })
 
   const handleMcp: express.RequestHandler = async (req, res) => {
-    const apiKey = extractApiKey({ headers: req.headers as Record<string, unknown>, params: req.params })
+    const apiKey = extractApiKey({
+      headers: req.headers as Record<string, unknown>,
+      params: req.params,
+      query: req.query as Record<string, unknown>,
+    })
     if (!apiKey) {
       res.status(401).set('WWW-Authenticate', 'Bearer').json({
         jsonrpc: '2.0',
@@ -1929,7 +2132,7 @@ export function createApp(config: Config): express.Express {
 - [ ] **Step 5: Run the whole suite**
 
 Run: `npm test`
-Expected: all tests PASS, including the 8 new ones in `test/server/mcp.ts` and the Task 1 health tests.
+Expected: all tests PASS, including the 11 new ones in `test/server/mcp.ts` and the Task 1 health tests.
 
 If `StreamableHTTPClientTransport`'s import path errors, list the client directory with `ls node_modules/@modelcontextprotocol/sdk/dist/esm/client/` and use the path that exists. Do not stub the transport.
 
@@ -1947,21 +2150,35 @@ git commit -m "feat: stateless MCP server over streamable HTTP"
 
 ---
 
-### Task 10: Path-based API key fallback
+### Task 10: URL-carried API key fallbacks
 
 **Files:**
 - Modify: `src/server/app.ts`
-- Test: `test/server/path-auth.ts`
+- Test: `test/server/url-auth.ts`
 
 **Interfaces:**
 - Consumes: everything from Task 9.
-- Produces: the route `POST /mcp/k/:apiKey`.
+- Produces: the route `POST /mcp/k/:apiKey`. The `?apiKey=` carrier needs no new route — Task 9's `handleMcp` already passes `req.query` to `extractApiKey`.
 
-This exists only for clients that cannot set headers (the claude.ai web connector). The key lands in the URL, so this route must never be logged.
+These exist for clients that cannot set headers. Claude Desktop's **Code tab**
+reads `.mcp.json` and handles headers natively, so it needs neither; Claude
+Desktop's **chat** surface and claude.ai web use the custom-connector UI, whose
+only fields are the server URL plus optional OAuth client id and secret. Those
+clients must put the key in the URL.
+
+The key lands in the URL either way, so neither route may ever be logged. This
+task must also prove that an `apiKey` in the query string does not disturb the
+`?ops=` / `?resources=` tool filtering that shares the same query object, and
+that a URL-carried key never surfaces in a **response body** — success or error.
+
+Asserting only that nothing is logged is not sufficient: nothing on the request
+path logs today, so such a test cannot fail and proves nothing. The exposure that
+can actually regress is an error handler widening to echo the request URL or
+query back to the caller, which would hand the key straight to the client.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/server/path-auth.ts`:
+Create `test/server/url-auth.ts`:
 
 ```ts
 import { test, afterEach } from 'node:test'
@@ -2009,7 +2226,64 @@ test('the path route honours the ops filter', async () => {
   server.close()
 })
 
-test('the api key never appears in stdout or stderr', async () => {
+test('the query carrier authenticates without a header', async () => {
+  const { server, port } = await startServer()
+  const res = await rpc(port, '/mcp?apiKey=sk_query_key')
+  assert.equal(res.status, 200)
+  server.close()
+})
+
+test('an apiKey in the query does not disturb tool filtering', async () => {
+  const { server, port } = await startServer()
+  const res = await rpc(port, '/mcp?apiKey=sk_query_key&ops=read')
+  assert.equal(res.status, 200)
+  const text = await res.text()
+  const listed = (text.match(/"name":"confetti_/g) ?? []).length
+  assert.equal(listed, 29, 'apiKey must be ignored by parseToolFilter, not rejected as an unknown key')
+  server.close()
+})
+
+test('an unknown query parameter is still ignored rather than rejected', async () => {
+  const { server, port } = await startServer()
+  const res = await rpc(port, '/mcp?apiKey=sk_query_key&utm_source=docs')
+  assert.equal(res.status, 200)
+  server.close()
+})
+
+test('the api key never appears in an error response body', async () => {
+  const { server, port } = await startServer()
+
+  // ?ops=frobnicate makes ToolFilterError produce a 400 whose message quotes the
+  // offending value. If an error message ever widened to include the URL or the
+  // whole query, the path-carried key would ride along into the client's hands.
+  const res = await fetch(`http://127.0.0.1:${port}/mcp/k/sk_super_secret_value?ops=frobnicate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  })
+
+  assert.equal(res.status, 400)
+  const body = await res.text()
+  assert.ok(!body.includes('sk_super_secret_value'), `api key leaked into the error body: ${body}`)
+
+  server.close()
+})
+
+test('the api key never appears in a successful response body', async () => {
+  const { server, port } = await startServer()
+
+  const res = await rpc(port, '/mcp/k/sk_super_secret_value?ops=read')
+  assert.equal(res.status, 200)
+  const body = await res.text()
+  assert.ok(!body.includes('sk_super_secret_value'), 'api key leaked into a successful response')
+
+  server.close()
+})
+
+// A weaker forward guard than the two above: nothing on the request path logs
+// today, so this cannot currently fail. Kept in case request logging is added
+// later, but named so it does not overstate what it proves.
+test('no request-path logging exists that could capture the api key', async () => {
   const { server, port } = await startServer()
   const captured: string[] = []
   const originalLog = console.log
@@ -2034,7 +2308,7 @@ test('the api key never appears in stdout or stderr', async () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `node --import=tsx --test test/server/path-auth.ts`
+Run: `node --import=tsx --test test/server/url-auth.ts`
 Expected: FAIL — the `/mcp/k/:apiKey` route returns 404.
 
 - [ ] **Step 3: Register the route in `src/server/app.ts`**
@@ -2052,8 +2326,8 @@ Add immediately after the existing `app.post('/mcp', handleMcp)` line:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `node --import=tsx --test test/server/path-auth.ts`
-Expected: 3 tests PASS.
+Run: `node --import=tsx --test test/server/url-auth.ts`
+Expected: 8 tests PASS.
 
 - [ ] **Step 5: Run the whole suite**
 
@@ -2064,7 +2338,7 @@ Expected: all tests PASS.
 
 ```bash
 git add -A
-git commit -m "feat: path-based api key fallback for header-less clients"
+git commit -m "feat: url-carried api key fallbacks for header-less clients"
 ```
 
 ---
@@ -2157,12 +2431,41 @@ git commit -m "build: multi-stage Dockerfile running as non-root"
 
 **Files:**
 - Create: `.github/workflows/ci.yml`, `.github/workflows/release.yml`
+- Modify: `package.json` (the `test` script — see Step 0)
 
 **Interfaces:**
 - Consumes: `npm run lint`, `npm test`, `npm run build`, `Dockerfile`.
 - Produces: `deviesdevelopment/confetti-mcp` on Docker Hub, tagged on version tags.
 
 Requires two repository secrets: `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` (a Docker Hub access token scoped to read/write on this repository, not an account password).
+
+**The test suite hangs on failure, and CI is where that bites.** Tests that start a
+server call `server.close()` after their assertions with no `try/finally`, so a
+throwing assertion skips cleanup, leaks a listening handle, and `node --test`
+never exits. This was found empirically: forcing a failure required
+`--test-force-exit` to get any output at all. Locally it is a nuisance; in CI a
+genuine test failure would hang the job until the runner timeout rather than
+failing fast. Step 0 fixes it, and both workflows carry an explicit
+`timeout-minutes` as a second line of defence.
+
+- [ ] **Step 0: Stop a failing test from hanging the run**
+
+In `package.json`, change the `test` script from:
+
+```json
+"test": "node --import=tsx --test test/**/*.ts",
+```
+
+to:
+
+```json
+"test": "node --import=tsx --test --test-force-exit test/**/*.ts",
+```
+
+Verify: `npm test` still reports 100 passing. Then confirm the guard works —
+temporarily add `assert.equal(1, 2)` to any test, run `npm test`, and check that
+it **exits** with a failure rather than hanging. Remove the deliberate failure
+afterwards and report what you observed.
 
 - [ ] **Step 1: Create `.github/workflows/ci.yml`**
 
@@ -2177,6 +2480,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -2198,6 +2502,7 @@ jobs:
 
   docker:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -2225,6 +2530,7 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
       contents: read
     steps:
@@ -2385,14 +2691,45 @@ helper and retries once, so a rotated key heals without restarting the session.
 aliases (`get`, `post`, `put`, `patch`, `delete`). `read` covers both `find` and
 `find_all`.
 
+## Connect from Claude Desktop
+
+Which setup you need depends on the surface:
+
+**Code tab** — reads `~/.claude.json`, `.mcp.json`, and
+`claude_desktop_config.json`, so it supports headers exactly like the CLI. Use
+any of the configurations above; nothing extra is needed.
+
+**Chat surface** (and claude.ai web) — these use the custom connector UI, whose
+only fields are the server URL and, under Advanced settings, an OAuth client id
+and secret. There is no way to send a header, so put the key in the URL:
+
+```
+https://your-host/mcp?apiKey=YOUR_CONFETTI_API_KEY
+```
+
+Add it under Settings → Connectors → Add custom connector. Filters still work:
+
+```
+https://your-host/mcp?apiKey=YOUR_CONFETTI_API_KEY&ops=read
+```
+
+Prefer a header wherever the client allows one. A key in a URL is visible in
+browser history, proxy logs, and anything that records request lines — the URL
+forms exist because these two surfaces cannot do better, not because the
+tradeoff is even.
+
 ## Authentication
 
 In precedence order:
 
 1. `Authorization: Bearer <key>` — recommended.
 2. `X-Api-Key: <key>` — alias.
-3. `POST /mcp/k/<key>` — fallback for clients that cannot set headers, such as
-   the claude.ai web connector UI. Discouraged: the key ends up in the URL.
+3. `?apiKey=<key>` — URL fallback, for clients that cannot set headers.
+4. `POST /mcp/k/<key>` — the other URL fallback, for clients or proxies that
+   handle a path segment better than a query parameter.
+
+A malformed `Authorization` header is rejected rather than falling through to a
+weaker carrier. An empty value in carriers 2–4 falls through to the next.
 
 ## Self-hosting
 

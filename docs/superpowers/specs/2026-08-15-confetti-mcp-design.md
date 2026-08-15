@@ -22,7 +22,7 @@ hand-written, so the tool surface tracks the library automatically.
 - API key supplied by the caller via a standard HTTP header, never stored server-side.
 - Self-hostable by anyone from a public Docker image.
 - Deployment topology and Azure resource names stay private.
-- New resources added to `confetti-node` appear as tools with no code change here.
+- New resources in `confetti-node` are picked up with a one-line map addition, and the build fails loudly until it is made.
 
 ## Non-goals
 
@@ -104,22 +104,42 @@ Accepted carriers, in precedence order:
 1. `Authorization: Bearer <key>` — the primary, and the only one documented as
    first-class.
 2. `X-Api-Key: <key>` — alias, for clients whose UI labels the field that way.
-3. `/mcp/k/<key>` path segment — fallback for clients that cannot set headers
-   (notably the claude.ai web connector UI). Documented as discouraged.
+3. `?apiKey=<key>` query parameter — URL-carried fallback.
+4. `/mcp/k/<key>` path segment — the other URL-carried fallback.
 
 Missing or empty key returns `401` with a `WWW-Authenticate: Bearer` header.
+
+A present-but-malformed `Authorization` header returns `401` rather than falling
+through to a weaker carrier; an empty value in carriers 2–4 falls through to the
+next. Explicitly presenting a broken credential is an error, not an invitation to
+try something else.
+
+**Why two URL-carried fallbacks.** Claude Desktop's **Code tab** reads
+`~/.claude.json` and `.mcp.json`, so it handles headers natively and needs
+neither. Claude Desktop's **chat** surface and claude.ai web use the custom
+connector UI, whose only fields are the remote MCP server URL and, under advanced
+settings, an OAuth client id and secret — there is no way to send a header. Those
+clients need the key in the URL. The query form composes more naturally with the
+`?ops=` / `?resources=` filters; the path form is kept for clients or proxies
+that handle it better. Both carry identical exposure and both are documented as
+second-class.
 
 The key is never logged, never written to disk, and never included in error
 messages returned to the client.
 
-**Why header over path or querystring.** A key in the URL lands in Azure App
-Service HTTP logs, Application Insights request telemetry, and any reverse proxy
-access log; KleerMCP had to add explicit log-filter suppression to work around
-exactly this. It also sits in plaintext in the user's `~/.claude.json`, whereas a
-header supports `${CONFETTI_API_KEY}` expansion or a `headersHelper` command, so
-the secret need not be in a config file at all. RFC 6750 additionally discourages
-tokens in query strings. The path fallback carries the same log-suppression
-treatment as KleerMCP, scoped to that route only.
+**Why header is still the documented default.** A key in the URL lands in Azure
+App Service HTTP logs, Application Insights request telemetry, and any reverse
+proxy access log; KleerMCP had to add explicit log-filter suppression to work
+around exactly this. It also sits in plaintext in the user's `~/.claude.json`,
+whereas a header supports `${CONFETTI_API_KEY}` expansion or a `headersHelper`
+command, so the secret need not be in a config file at all. RFC 6750 additionally
+discourages tokens in query strings. The server performs no request logging at
+all, so the URL-carried fallbacks are never logged in the first place; the
+404 and error handlers likewise deliberately never echo the request URL back
+to the client.
+
+Any client that *can* send a header should. The fallbacks exist because two real
+Claude surfaces cannot, not because the tradeoff is even.
 
 ## 4. Connect-URL grammar
 
@@ -139,7 +159,21 @@ both vocabularies are natural to reach for. `read` covers both `find` and
 `find_all`.
 
 Unknown resource or op names are rejected with `400` and a message listing valid
-values, rather than silently yielding an empty tool list.
+values, rather than silently yielding an empty tool list. An empty value
+(`?ops=`) is treated as absent, matching ordinary query-string semantics.
+
+**The filter is enforced, not advisory.** It governs `tools/call` as well as
+`tools/list`: the per-request server's name lookup is built from the filtered
+set, so a tool excluded from a connection is refused when invoked directly, not
+merely hidden from the listing. A `?ops=read` connection cannot call a delete
+even by naming it. The refusal message distinguishes "excluded by your filter"
+from "no such tool" so the caller can act on it.
+
+Relatedly, the trusted connection context is spread **after** caller-supplied
+tool arguments in every dispatch path, so a tool argument cannot override
+`apiKey`, `apiHost`, or `apiProtocol` and redirect the upstream call. Both
+properties carry regression tests, since each currently holds by construction
+rather than by an explicit guard.
 
 Default with no parameters is all 63 tools. The API key already grants full
 access, and this matches how GitHub, Linear, and Notion's servers behave.
@@ -243,12 +277,12 @@ the upstream API. The tests that carry real weight:
   test that catches the endpoint-naming fragility described in §5.
 - **Filter grammar** — `ops` and `resources` combinations produce exactly the
   expected tool sets, including the HTTP-verb aliases and the 63-tool default.
-- **Auth extraction** — all three carriers, precedence between them, and the
+- **Auth extraction** — all four carriers, precedence between them, and the
   `401` path. Plus an assertion that the key appears in no log output.
 - **Error mapping** — each upstream failure mode produces the right `isError`
   message, driven by `error.name`.
 - **Schema generation** — spot-check that `events_create` inputs match
-  `EventCreateSchema` and that relationship fields are stripped.
+  `EventCreateSchema`.
 
 ## 9. Known constraints
 
@@ -258,11 +292,11 @@ the upstream API. The tests that carry real weight:
   would be cleaner — tracked as a follow-up, not a blocker.
 - **claude.ai web cannot set custom headers**, which is why the path fallback
   exists. Claude Code and Claude Desktop both handle headers natively.
-- **63 tool schemas is roughly 40–60k tokens of always-on context.** This was a
-  deliberate choice for discoverability over context economy. The `?ops=` and
-  `?resources=` filters are the escape valve, and the generated architecture
-  means switching to a smaller surface later is a change to one module, not a
-  rewrite.
+- **63 tool schemas is roughly 19k tokens (68 KB serialised) of always-on
+  context.** This was a deliberate choice for discoverability over context
+  economy. The `?ops=` and `?resources=` filters are the escape valve, and the
+  generated architecture means switching to a smaller surface later is a
+  change to one module, not a rewrite.
 
 ## 10. Follow-ups
 
