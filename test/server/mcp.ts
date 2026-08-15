@@ -2,6 +2,7 @@ import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import nock from 'nock'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { createApp } from '../../src/server/app.js'
 import { loadConfig } from '../../src/config.js'
@@ -87,15 +88,105 @@ test('an upstream failure comes back as an isError result, not a protocol error'
   server.close()
 })
 
-test('an unknown tool name returns an isError result', async () => {
+test('an unknown tool name is a protocol error, not a tool result', async () => {
+  // The spec names "Unknown tools" as its canonical -32602, and clients key on
+  // it to refresh a stale tool list or drop a hallucinated name. An isError
+  // result instead feeds "Unknown tool" back to the model, which retries
+  // variations of it.
   const { server, port } = await startServer()
   const { client, transport } = await connect(port)
 
-  const result = await client.callTool({ name: 'confetti_nope_find', arguments: {} })
-  assert.equal(result.isError, true)
+  await assert.rejects(
+    () => client.callTool({ name: 'confetti_nope_find', arguments: {} }),
+    (error: unknown) => {
+      assert.equal((error as { code?: number }).code, ErrorCode.InvalidParams)
+      assert.match((error as Error).message, /confetti_nope_find/)
+      return true
+    },
+  )
 
   await transport.close()
   server.close()
+})
+
+test('tool results are compact JSON, not pretty-printed', async () => {
+  // Indentation was ~19% of every read response, paid on every call.
+  const { server, port } = await startServer()
+  nock(API)
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [{ id: '1', type: 'events', attributes: { name: 'DevSummit' } }] }, { 'content-type': 'application/json' })
+
+  const { client, transport } = await connect(port)
+  const result = await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+  const content = result.content as Array<{ type: string; text: string }>
+
+  assert.match(content[0]!.text, /DevSummit/)
+  assert.ok(!content[0]!.text.includes('\n'), 'a tool result must not carry indentation')
+
+  await transport.close()
+  server.close()
+})
+
+test('a failed tool call is logged as one structured line, without key, args or message', async () => {
+  const { server, port } = await startServer()
+  nock(API)
+    .get('/events/999')
+    .query(true)
+    .reply(404, { message: 'Event not found for key sk_test_key' }, { 'content-type': 'application/json' })
+
+  const lines: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  // Intercept the stream, not console.*: a logger added later writes here.
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+    return original(chunk as string, ...(rest as []))
+  }) as typeof process.stderr.write
+
+  try {
+    const { client, transport } = await connect(port)
+    await client.callTool({ name: 'confetti_events_find', arguments: { id: '999' } })
+    await transport.close()
+  } finally {
+    process.stderr.write = original
+  }
+  server.close()
+
+  const logged = lines.join('').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+  const failure = logged.find((entry) => entry.msg === 'tool_call_failed')
+  assert.ok(failure, `expected a tool_call_failed line, got ${JSON.stringify(logged)}`)
+  assert.equal(failure.tool, 'confetti_events_find')
+  assert.equal(failure.error, 'NotFoundError')
+  assert.equal(typeof failure.durationMs, 'number')
+  assert.equal(typeof failure.requestId, 'string')
+
+  const all = lines.join('')
+  assert.ok(!all.includes('sk_test_key'), 'the api key must never reach a log')
+  assert.ok(!all.includes('999'), 'tool arguments must never reach a log')
+  assert.ok(!all.includes('Event not found'), 'an error message can carry caller data and must not be logged')
+})
+
+test('a successful tool call logs nothing', async () => {
+  const { server, port } = await startServer()
+  nock(API).get('/events').query(true).reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  const lines: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+    return original(chunk as string, ...(rest as []))
+  }) as typeof process.stderr.write
+
+  try {
+    const { client, transport } = await connect(port)
+    await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+    await transport.close()
+  } finally {
+    process.stderr.write = original
+  }
+  server.close()
+
+  assert.equal(lines.join('').trim(), '', 'the success path stays silent — this is a per-request-key server')
 })
 
 test('a filtered-out tool is refused when called, not merely hidden from the list', async () => {

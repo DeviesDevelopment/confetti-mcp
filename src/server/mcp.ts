@@ -1,6 +1,12 @@
 import { createRequire } from 'node:module'
+import { randomUUID } from 'node:crypto'
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
-import { CallToolRequestSchema, ListToolsRequestSchema } from '@modelcontextprotocol/sdk/types.js'
+import {
+  CallToolRequestSchema,
+  ErrorCode,
+  ListToolsRequestSchema,
+  McpError,
+} from '@modelcontextprotocol/sdk/types.js'
 import { buildTools, type GeneratedTool } from '../tools/definitions.js'
 import { parseToolFilter, selectTools, toolSetCacheKey } from '../tools/filter.js'
 import { callTool, type CallContext } from '../tools/dispatch.js'
@@ -39,12 +45,43 @@ export function getToolSet(query: Record<string, unknown>): GeneratedTool[] {
   return selected
 }
 
-export function createMcpServer(options: { tools: GeneratedTool[]; context: CallContext }): Server {
+/**
+ * The server's whole telemetry surface: one single-line JSON record, on stderr,
+ * for failures only.
+ *
+ * The zero-request-logging stance exists because API keys travel in the URL on
+ * the /mcp/k/<key> fallback, and it left on-call unable to tell "no traffic"
+ * from "every upstream call failing". This closes that without weakening the
+ * stance: only structural facts are logged — never the URL, never the caller's
+ * key, never tool arguments, and never an error *message*, which can quote the
+ * caller's data (and, for an API that echoes it, the key itself). The tool name
+ * is safe because an unknown name is refused before this point, so it is always
+ * one of the generated names.
+ */
+export function logEvent(
+  level: 'warn' | 'error',
+  msg: string,
+  fields: Record<string, string | number>,
+): void {
+  console.error(JSON.stringify({ level, msg, ...fields }))
+}
+
+export function newRequestId(): string {
+  return randomUUID()
+}
+
+export function createMcpServer(options: {
+  tools: GeneratedTool[]
+  context: CallContext
+  /** Correlates every line this request logs. Generated when absent. */
+  requestId?: string
+}): Server {
   const server = new Server(
     { name: SERVER_NAME, version: SERVER_VERSION },
     { capabilities: { tools: {} } },
   )
 
+  const requestId = options.requestId ?? newRequestId()
   const byName = new Map(options.tools.map((tool) => [tool.definition.name, tool]))
 
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -55,25 +92,47 @@ export function createMcpServer(options: { tools: GeneratedTool[]; context: Call
     const name = request.params.name
     const tool = byName.get(name)
     if (!tool) {
+      // Two different failures that must not be conflated.
+      //
       // `byName` is built from the FILTERED set, so a tool excluded by
       // ?ops= / ?resources= is refused here and not merely hidden from
       // tools/list. Without this the filter would be advisory: a ?ops=read
-      // connection could still invoke a delete by naming it directly.
-      const text = ALL_TOOL_NAMES.has(name)
-        ? `Tool '${name}' is not available on this connection — its operation or resource is excluded by the ?ops= / ?resources= filter in the connect URL.`
-        : `Unknown tool '${name}'.`
-      return {
-        isError: true,
-        content: [{ type: 'text' as const, text }],
+      // connection could still invoke a delete by naming it directly. That
+      // refusal stays an `isError` result on purpose — it is addressed to the
+      // model, which can pick a different tool and carry on.
+      if (ALL_TOOL_NAMES.has(name)) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: 'text' as const,
+              text: `Tool '${name}' is not available on this connection — its operation or resource is excluded by the ?ops= / ?resources= filter in the connect URL.`,
+            },
+          ],
+        }
       }
+      // A name that exists nowhere is a protocol-level mistake, and the spec
+      // names it as the canonical -32602. Clients key on that code to refresh a
+      // stale tool list or strip a hallucinated name; an `isError` result
+      // instead hands "Unknown tool" back to the model, which retries variants.
+      throw new McpError(ErrorCode.InvalidParams, `Unknown tool '${name}'.`)
     }
 
+    const startedAt = Date.now()
     try {
       const result = await callTool(tool, request.params.arguments ?? {}, options.context)
       return {
-        content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }],
+        // Compact on purpose: indentation was ~19% of every read response, paid
+        // out of the caller's context window on every single call.
+        content: [{ type: 'text' as const, text: JSON.stringify(result) }],
       }
     } catch (error) {
+      logEvent('error', 'tool_call_failed', {
+        requestId,
+        tool: name,
+        error: error instanceof Error ? error.name : typeof error,
+        durationMs: Date.now() - startedAt,
+      })
       return {
         isError: true,
         // The caller's key is passed so it can be exact-matched out of the
