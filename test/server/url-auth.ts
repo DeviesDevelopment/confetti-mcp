@@ -1,8 +1,12 @@
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import nock from 'nock'
+import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { createApp } from '../../src/server/app.js'
 import { loadConfig } from '../../src/config.js'
+
+const API = 'https://api.confetti.events'
 
 async function startServer() {
   const app = createApp(loadConfig({}))
@@ -18,6 +22,46 @@ function rpc(port: number, path: string) {
     headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
     body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
   })
+}
+
+/**
+ * A carrier connection with no Authorization header at all: the key can only
+ * come from the URL, which is the whole point of these tests.
+ */
+async function connect(port: number, path: string) {
+  const client = new Client({ name: 'test', version: '1.0.0' })
+  const transport = new StreamableHTTPClientTransport(new URL(`http://127.0.0.1:${port}${path}`))
+  await client.connect(transport)
+  return { client, transport }
+}
+
+/**
+ * Captures everything written to stdout and stderr, not just `console.*`.
+ * The likely way request logging arrives is `morgan`/`pino`, and both write to
+ * `process.stdout` directly — a console-only canary stays green while the key
+ * streams into the platform's log capture.
+ */
+async function captureOutput(work: () => Promise<void>): Promise<string> {
+  const chunks: string[] = []
+  const streams = [process.stdout, process.stderr] as const
+  const originals = streams.map((stream) => stream.write.bind(stream))
+
+  streams.forEach((stream, index) => {
+    stream.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+      chunks.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+      return originals[index]!(chunk as string, ...(rest as []))
+    }) as typeof stream.write
+  })
+
+  try {
+    await work()
+  } finally {
+    streams.forEach((stream, index) => {
+      stream.write = originals[index]! as typeof stream.write
+    })
+  }
+
+  return chunks.join('')
 }
 
 afterEach(() => {
@@ -65,26 +109,98 @@ test('an unknown query parameter is still ignored rather than rejected', async (
   server.close()
 })
 
-test('no request-path logging exists that could capture the api key', async () => {
+test('nothing written to stdout or stderr can capture a url-carried api key', async () => {
+  // The server does log now — one line per failed tool call — so the invariant
+  // is no longer "nothing is logged" but "the key is never in what is logged".
   const { server, port } = await startServer()
-  const captured: string[] = []
-  const originalLog = console.log
-  const originalError = console.error
-  console.log = (...args: unknown[]) => captured.push(args.join(' '))
-  console.error = (...args: unknown[]) => captured.push(args.join(' '))
 
-  try {
+  const output = await captureOutput(async () => {
     await rpc(port, '/mcp/k/sk_super_secret_value')
-  } finally {
-    console.log = originalLog
-    console.error = originalError
-    server.close()
-  }
+  })
+  server.close()
 
   assert.ok(
-    !captured.join('\n').includes('sk_super_secret_value'),
-    `api key leaked into logs: ${captured.join('\n')}`,
+    !output.includes('sk_super_secret_value'),
+    `api key leaked into process output: ${output}`,
   )
+})
+
+test('the failure log line the server does emit still carries no url-carried key', async () => {
+  const { server, port } = await startServer()
+  nock(API)
+    .get('/events/999')
+    .query(true)
+    .reply(404, { message: 'no such event' }, { 'content-type': 'application/json' })
+
+  const output = await captureOutput(async () => {
+    const { client, transport } = await connect(port, '/mcp/k/sk_super_secret_value')
+    await client.callTool({ name: 'confetti_events_find', arguments: { id: '999' } })
+    await transport.close()
+  })
+  server.close()
+
+  // The canary is only worth anything if it is watching a request that logs.
+  assert.match(output, /tool_call_failed/, 'expected the server to have logged this failure')
+  assert.ok(!output.includes('sk_super_secret_value'), `api key leaked into logs: ${output}`)
+})
+
+test('the path-carried key is the key sent upstream', async () => {
+  // tools/list needs no upstream call, so every test above this one would still
+  // pass if extractApiKey mangled the key — percent-decoding, the wrong params
+  // object — and every real tool call failed to authenticate.
+  const { server, port } = await startServer()
+  const scope = nock(API, { reqheaders: { authorization: 'apikey sk_path_key' } })
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  const { client, transport } = await connect(port, '/mcp/k/sk_path_key')
+  const result = await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+
+  assert.notEqual(result.isError, true, JSON.stringify(result.content))
+  scope.done()
+
+  await transport.close()
+  server.close()
+})
+
+test('the query-carried key is the key sent upstream', async () => {
+  const { server, port } = await startServer()
+  const scope = nock(API, { reqheaders: { authorization: 'apikey sk_query_key' } })
+    .get('/contacts')
+    .query(true)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  const { client, transport } = await connect(port, '/mcp?apiKey=sk_query_key')
+  const result = await client.callTool({ name: 'confetti_contacts_find_all', arguments: {} })
+
+  assert.notEqual(result.isError, true, JSON.stringify(result.content))
+  scope.done()
+
+  await transport.close()
+  server.close()
+})
+
+test('a percent-encoded path key is decoded before it is forwarded', async () => {
+  // The path segment is the one carrier that can arrive percent-encoded, and
+  // decoding it in the wrong place is the exact wiring bug this pins.
+  const { server, port } = await startServer()
+  const scope = nock(API, { reqheaders: { authorization: 'apikey sk_path+key/with=chars' } })
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  const { client, transport } = await connect(
+    port,
+    `/mcp/k/${encodeURIComponent('sk_path+key/with=chars')}`,
+  )
+  const result = await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+
+  assert.notEqual(result.isError, true, JSON.stringify(result.content))
+  scope.done()
+
+  await transport.close()
+  server.close()
 })
 
 test('the api key never appears in an error response body', async () => {
