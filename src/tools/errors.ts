@@ -4,9 +4,17 @@
  * throws does set `name`, so classification goes by that instead of instanceof.
  */
 
-/** Redacts anything shaped like a Confetti API key before it reaches a client. */
-function redact(text: string): string {
-  return text.replace(/\bsk_[A-Za-z0-9_-]{4,}/g, '[redacted]')
+/**
+ * Redacts the caller's key, plus anything shaped like one, before it reaches a
+ * client. Confetti enforces no key format (`apiKey: z.string()`), so the shape
+ * pattern is only a secondary net — exact-matching the caller's own key is what
+ * actually holds the "key never reaches a client" constraint.
+ */
+function redact(text: string, secret?: string): string {
+  const byShape = text.replace(/\bsk_[A-Za-z0-9_-]{4,}/g, '[redacted]')
+  // Guard the length: replaceAll('') inserts between every character.
+  if (!secret || secret.length < 4) return byShape
+  return byShape.replaceAll(secret, '[redacted]')
 }
 
 function messageOf(error: unknown): string {
@@ -19,17 +27,25 @@ function nameOf(error: unknown): string {
   return error instanceof Error ? error.name : typeof error
 }
 
-export function toolErrorMessage(error: unknown, toolName: string): string {
-  const detail = redact(messageOf(error))
-  switch (nameOf(error)) {
+export function toolErrorMessage(error: unknown, toolName: string, secret?: string): string {
+  const detail = messageOf(error)
+  const name = nameOf(error)
+
+  let message: string
+  switch (name) {
     case 'ParameterError':
     case 'ZodError':
-      return `Invalid parameters for '${toolName}': ${detail}`
+      message = `Invalid parameters for '${toolName}': ${detail}`
+      break
     case 'NotFoundError':
-      return `Not found in '${toolName}': ${detail}`
+      message = `Not found in '${toolName}': ${detail}`
+      break
     case 'OperationNotFoundError':
-      return `Unsupported operation '${toolName}': ${detail}`
+      message = `Unsupported operation '${toolName}': ${detail}`
+      break
     default:
-      return `Error in '${toolName}': [${nameOf(error)}] ${detail}`
+      message = `Error in '${toolName}': [${name}] ${detail}`
   }
+
+  return redact(message, secret)
 }

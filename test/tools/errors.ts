@@ -48,3 +48,25 @@ test('never echoes an api key that appears in the message', () => {
   assert.ok(!message.includes('sk_live_secret123'), 'api-key-shaped tokens must be redacted')
   assert.match(message, /\[redacted\]/)
 })
+
+test('redacts the caller api key exactly, whatever its shape', () => {
+  const message = toolErrorMessage(named('ParameterError', 'rejected key my-key here'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'), 'the caller key must not survive into the message')
+  assert.match(message, /\[redacted\]/)
+})
+
+test('redacts every occurrence of the caller api key', () => {
+  const message = toolErrorMessage(named('ParameterError', 'my-key then my-key again'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'))
+})
+
+test('redacts the caller key even from an unclassified error', () => {
+  const message = toolErrorMessage(named('TypeError', 'boom my-key'), 'confetti_events_find', 'my-key')
+  assert.ok(!message.includes('my-key'))
+  assert.match(message, /\[TypeError\]/)
+})
+
+test('an empty or trivially short secret does not corrupt the message', () => {
+  assert.match(toolErrorMessage(named('ParameterError', 'plain failure'), 'confetti_events_find', ''), /plain failure/)
+  assert.match(toolErrorMessage(named('ParameterError', 'plain failure'), 'confetti_events_find', 'ab'), /plain failure/)
+})
