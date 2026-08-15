@@ -361,6 +361,169 @@ test('concurrent connections do not leak api keys across requests', async () => 
   server.close()
 })
 
+test('two concurrent connections never see each other records', async () => {
+  // The single most security-relevant invariant this server has, and the one
+  // the audit found evidence against: `confetti`'s adapter deserialised every
+  // response through ONE module-level yayson Store that is never reset, and
+  // yayson resolves a linkage-only relationship by scanning every record any
+  // earlier request in the process synced. Tenant B references workspace 5 and
+  // ships no `included` block for it, so under a shared Store B's response is
+  // completed from tenant A's workspace 5 — a cross-tenant disclosure on a
+  // deployment whose whole design claim is per-request statelessness.
+  //
+  // Both calls are genuinely in flight together; B's response is delayed only
+  // so that A's deserialisation is guaranteed to have happened first, which is
+  // the ordering the bleed needs.
+  const { server, port } = await startServer()
+
+  nock(API, { reqheaders: { authorization: 'apikey tenant-a-key' } })
+    .get('/events/1')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '1',
+          type: 'events',
+          attributes: { name: 'Tenant A offsite' },
+          relationships: { workspace: { data: { id: '5', type: 'workspaces' } } },
+        },
+        included: [
+          {
+            id: '5',
+            type: 'workspaces',
+            attributes: { name: 'Tenant A Workspace', internalNote: 'A-only-data' },
+          },
+        ],
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  nock(API, { reqheaders: { authorization: 'apikey tenant-b-key' } })
+    .get('/events/2')
+    .query(true)
+    .delay(60)
+    .reply(
+      200,
+      {
+        data: {
+          id: '2',
+          type: 'events',
+          attributes: { name: 'Tenant B kickoff' },
+          // Same (type, id) as tenant A's workspace, and no `included` block:
+          // the precondition for the bleed.
+          relationships: { workspace: { data: { id: '5', type: 'workspaces' } } },
+        },
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  const a = await connect(port, '/mcp', { authorization: 'Bearer tenant-a-key' })
+  const b = await connect(port, '/mcp', { authorization: 'Bearer tenant-b-key' })
+
+  const [resultA, resultB] = await Promise.all([
+    a.client.callTool({ name: 'confetti_events_find', arguments: { id: '1' } }),
+    b.client.callTool({ name: 'confetti_events_find', arguments: { id: '2' } }),
+  ])
+
+  const textOf = (result: { content?: unknown }) =>
+    (result.content as Array<{ text: string }>)[0]!.text
+
+  // The fixture has to be real: A must actually receive its own included
+  // workspace, or B "not seeing it" would prove nothing.
+  const forA = textOf(resultA)
+  assert.match(forA, /Tenant A Workspace/, "tenant A did not receive its own included record")
+  assert.match(forA, /A-only-data/)
+
+  const forB = textOf(resultB)
+  assert.match(forB, /Tenant B kickoff/, 'tenant B did not receive its own record')
+  assert.doesNotMatch(forB, /Tenant A Workspace/, "tenant A's workspace bled into tenant B's response")
+  assert.doesNotMatch(forB, /A-only-data/, "tenant A's private attribute bled into tenant B's response")
+
+  await a.transport.close()
+  await b.transport.close()
+  server.close()
+})
+
+test('a later connection never inherits an earlier one records', async () => {
+  // The sequential half of the same invariant: a store that is never reset
+  // keeps every record for the life of the process, so the bleed does not need
+  // concurrency — only that tenant A called first, at any point since boot.
+  const { server, port } = await startServer()
+
+  nock(API, { reqheaders: { authorization: 'apikey tenant-c-key' } })
+    .get('/events/3')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '3',
+          type: 'events',
+          attributes: { name: 'Tenant C summit' },
+          relationships: { workspace: { data: { id: '7', type: 'workspaces' } } },
+        },
+        included: [{ id: '7', type: 'workspaces', attributes: { name: 'Tenant C Workspace' } }],
+      },
+      { 'content-type': 'application/json' },
+    )
+  nock(API, { reqheaders: { authorization: 'apikey tenant-d-key' } })
+    .get('/events/4')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '4',
+          type: 'events',
+          attributes: { name: 'Tenant D summit' },
+          relationships: { workspace: { data: { id: '7', type: 'workspaces' } } },
+        },
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  const c = await connect(port, '/mcp', { authorization: 'Bearer tenant-c-key' })
+  await c.client.callTool({ name: 'confetti_events_find', arguments: { id: '3' } })
+  await c.transport.close()
+
+  const d = await connect(port, '/mcp', { authorization: 'Bearer tenant-d-key' })
+  const resultD = await d.client.callTool({ name: 'confetti_events_find', arguments: { id: '4' } })
+  const text = (resultD.content as Array<{ text: string }>)[0]!.text
+
+  assert.match(text, /Tenant D summit/)
+  assert.doesNotMatch(text, /Tenant C Workspace/, "a closed connection's records must not survive into the next")
+
+  await d.transport.close()
+  server.close()
+})
+
+test('an upstream error that echoes the caller key never reaches the client', async () => {
+  // Redaction of the caller's own key exists only because mcp.ts passes it to
+  // toolErrorMessage as the third argument — deleting that argument leaves the
+  // function working, and left every test green. The key here is deliberately
+  // NOT `sk_`-shaped, so the shape regex cannot save it: exact-matching the
+  // connection's own key is the only thing standing between an upstream that
+  // echoes it and the model's transcript.
+  const key = 'tenant-alpha-9f3c'
+  const { server, port } = await startServer()
+  nock(API)
+    .get('/events')
+    .query(true)
+    .reply(401, `Invalid credentials for apikey ${key}`, { 'content-type': 'text/plain' })
+
+  const { client, transport } = await connect(port, '/mcp', { authorization: `Bearer ${key}` })
+  const result = await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+
+  assert.equal(result.isError, true)
+  const text = (result.content as Array<{ text: string }>)[0]!.text
+  assert.ok(!text.includes(key), `the caller's api key reached the client: ${text}`)
+  assert.match(text, /\[redacted\]/, 'the key must be redacted, not merely absent by luck')
+
+  await transport.close()
+  server.close()
+})
+
 test('GET /mcp is rejected because the server is stateless', async () => {
   const { server, port } = await startServer()
   const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
