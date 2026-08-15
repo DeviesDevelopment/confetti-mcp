@@ -2168,7 +2168,13 @@ clients must put the key in the URL.
 
 The key lands in the URL either way, so neither route may ever be logged. This
 task must also prove that an `apiKey` in the query string does not disturb the
-`?ops=` / `?resources=` tool filtering that shares the same query object.
+`?ops=` / `?resources=` tool filtering that shares the same query object, and
+that a URL-carried key never surfaces in a **response body** — success or error.
+
+Asserting only that nothing is logged is not sufficient: nothing on the request
+path logs today, so such a test cannot fail and proves nothing. The exposure that
+can actually regress is an error handler widening to echo the request URL or
+query back to the caller, which would hand the key straight to the client.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -2244,7 +2250,40 @@ test('an unknown query parameter is still ignored rather than rejected', async (
   server.close()
 })
 
-test('the api key never appears in stdout or stderr', async () => {
+test('the api key never appears in an error response body', async () => {
+  const { server, port } = await startServer()
+
+  // ?ops=frobnicate makes ToolFilterError produce a 400 whose message quotes the
+  // offending value. If an error message ever widened to include the URL or the
+  // whole query, the path-carried key would ride along into the client's hands.
+  const res = await fetch(`http://127.0.0.1:${port}/mcp/k/sk_super_secret_value?ops=frobnicate`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream' },
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+  })
+
+  assert.equal(res.status, 400)
+  const body = await res.text()
+  assert.ok(!body.includes('sk_super_secret_value'), `api key leaked into the error body: ${body}`)
+
+  server.close()
+})
+
+test('the api key never appears in a successful response body', async () => {
+  const { server, port } = await startServer()
+
+  const res = await rpc(port, '/mcp/k/sk_super_secret_value?ops=read')
+  assert.equal(res.status, 200)
+  const body = await res.text()
+  assert.ok(!body.includes('sk_super_secret_value'), 'api key leaked into a successful response')
+
+  server.close()
+})
+
+// A weaker forward guard than the two above: nothing on the request path logs
+// today, so this cannot currently fail. Kept in case request logging is added
+// later, but named so it does not overstate what it proves.
+test('no request-path logging exists that could capture the api key', async () => {
   const { server, port } = await startServer()
   const captured: string[] = []
   const originalLog = console.log
@@ -2288,7 +2327,7 @@ Add immediately after the existing `app.post('/mcp', handleMcp)` line:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/server/url-auth.ts`
-Expected: 6 tests PASS.
+Expected: 8 tests PASS.
 
 - [ ] **Step 5: Run the whole suite**
 
