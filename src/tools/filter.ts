@@ -37,9 +37,16 @@ export interface ToolFilter {
 }
 
 function splitList(value: unknown): string[] | undefined {
-  if (typeof value !== 'string') return undefined
-  const parts = value
-    .split(',')
+  if (value === undefined) return undefined
+  // Express turns a repeated query parameter into an array. Treat it as a
+  // union — the way a user reads ?ops=read&ops=create — rather than letting it
+  // fall through as "absent", which would silently disable the filter.
+  const raw = Array.isArray(value) ? value : [value]
+  if (!raw.every((entry): entry is string => typeof entry === 'string')) {
+    throw new ToolFilterError('Filter values must be strings.')
+  }
+  const parts = raw
+    .flatMap((entry) => entry.split(','))
     .map((part) => part.trim())
     .filter((part) => part.length > 0)
   return parts.length > 0 ? parts : undefined
@@ -90,6 +97,14 @@ export function selectTools(all: GeneratedTool[], filter: ToolFilter): Generated
 }
 
 export function toolSetCacheKey(query: Record<string, unknown>): string {
-  const normalise = (value: unknown) => (splitList(value) ?? []).map((v) => v.toLowerCase()).sort().join(',')
-  return `ops=${normalise(query['ops'])}|resources=${normalise(query['resources'])}`
+  const canonical = (value: unknown, resolve: (token: string) => string[]) => {
+    const tokens = splitList(value) ?? []
+    return [...new Set(tokens.flatMap((token) => resolve(token.toLowerCase())))].sort().join(',')
+  }
+  const ops = canonical(query['ops'], (token) => OP_ALIASES[token] ?? [token])
+  const resources = canonical(query['resources'], (token) => {
+    const modelKey = RESOURCE_LOOKUP[token]
+    return [modelKey ?? token]
+  })
+  return `ops=${ops}|resources=${resources}`
 }

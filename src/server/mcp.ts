@@ -21,13 +21,17 @@ const ALL_TOOL_NAMES = new Set(ALL_TOOLS.map((tool) => tool.definition.name))
 /** Filtered tool sets are memoised per normalised query. */
 const toolSetCache = new Map<string, GeneratedTool[]>()
 
+const TOOL_SET_CACHE_LIMIT = 128
+
 export function getToolSet(query: Record<string, unknown>): GeneratedTool[] {
   const key = toolSetCacheKey(query)
   const cached = toolSetCache.get(key)
   if (cached) return cached
 
   const selected = selectTools(ALL_TOOLS, parseToolFilter(query))
-  toolSetCache.set(key, selected)
+  // Bounded on purpose: the key is caller-influenced, and this is only an
+  // optimisation, so declining to cache beyond the cap is always correct.
+  if (toolSetCache.size < TOOL_SET_CACHE_LIMIT) toolSetCache.set(key, selected)
   return selected
 }
 

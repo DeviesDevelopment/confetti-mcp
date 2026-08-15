@@ -82,3 +82,24 @@ test('cache key is stable regardless of ordering or spacing', () => {
   assert.equal(toolSetCacheKey({ ops: 'create,read' }), toolSetCacheKey({ ops: ' read , create ' }))
   assert.notEqual(toolSetCacheKey({ ops: 'read' }), toolSetCacheKey({ ops: 'create' }))
 })
+
+test('a repeated ops parameter is a union, not a disabled filter', () => {
+  assert.equal(select({ ops: ['read', 'read'] }).length, 29)
+  assert.equal(select({ ops: ['read', 'delete'] }).length, 39)
+  assert.equal(select({ ops: ['read'] }).length, 29)
+})
+
+test('a repeated resources parameter is a union', () => {
+  assert.equal(select({ resources: ['events', 'tickets'] }).length, 8)
+})
+
+test('a non-string filter value is rejected rather than ignored', () => {
+  assert.throws(() => parseToolFilter({ ops: { evil: true } }), ToolFilterError)
+})
+
+test('cache key canonicalises aliases to a single entry', () => {
+  assert.equal(toolSetCacheKey({ ops: 'read' }), toolSetCacheKey({ ops: 'get' }))
+  assert.equal(toolSetCacheKey({ ops: 'read,read,read' }), toolSetCacheKey({ ops: 'read' }))
+  assert.equal(toolSetCacheKey({ resources: 'sponsor_levels' }), toolSetCacheKey({ resources: 'sponsorLevels' }))
+  assert.notEqual(toolSetCacheKey({ ops: 'read' }), toolSetCacheKey({ ops: 'delete' }))
+})

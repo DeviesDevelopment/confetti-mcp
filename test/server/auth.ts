@@ -70,3 +70,11 @@ test('an empty apiKey query parameter falls through to the path param', () => {
   const key = extractApiKey({ headers: {}, query: { apiKey: '  ' }, params: { apiKey: 'sk_path' } })
   assert.equal(key, 'sk_path')
 })
+
+test('an array-valued authorization header takes the first value', () => {
+  assert.equal(extractApiKey({ headers: { authorization: ['Bearer sk_one', 'Bearer sk_two'] } }), 'sk_one')
+})
+
+test('an array-valued x-api-key header takes the first value', () => {
+  assert.equal(extractApiKey({ headers: { 'x-api-key': ['sk_one', 'sk_two'] } }), 'sk_one')
+})

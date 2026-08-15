@@ -189,6 +189,41 @@ test('an invalid ops value is rejected with 400 and lists valid values', async (
   server.close()
 })
 
+test('a repeated ops parameter cannot widen the tool set', async () => {
+  const { server, port } = await startServer()
+  const { client, transport } = await connect(port, '/mcp?ops=read&ops=read')
+  const { tools } = await client.listTools()
+  assert.equal(tools.length, 29, 'a repeated parameter must not disable the filter')
+  assert.equal(tools.filter((t) => t.name.endsWith('_delete')).length, 0)
+  await transport.close()
+  server.close()
+})
+
+test('concurrent connections do not leak api keys across requests', async () => {
+  const { server, port } = await startServer()
+
+  const scopeA = nock(API, { reqheaders: { authorization: 'apikey sk_tenant_a' } })
+    .get('/events').query(true).reply(200, { data: [] }, { 'content-type': 'application/json' })
+  const scopeB = nock(API, { reqheaders: { authorization: 'apikey sk_tenant_b' } })
+    .get('/contacts').query(true).reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  const a = await connect(port, '/mcp', { authorization: 'Bearer sk_tenant_a' })
+  const b = await connect(port, '/mcp', { authorization: 'Bearer sk_tenant_b' })
+
+  await Promise.all([
+    a.client.callTool({ name: 'confetti_events_find_all', arguments: {} }),
+    b.client.callTool({ name: 'confetti_contacts_find_all', arguments: {} }),
+  ])
+
+  // Each nock scope only matches if that tenant's own key was sent.
+  assert.ok(scopeA.isDone(), "tenant A's request did not carry tenant A's key")
+  assert.ok(scopeB.isDone(), "tenant B's request did not carry tenant B's key")
+
+  await a.transport.close()
+  await b.transport.close()
+  server.close()
+})
+
 test('GET /mcp is rejected because the server is stateless', async () => {
   const { server, port } = await startServer()
   const res = await fetch(`http://127.0.0.1:${port}/mcp`, {
