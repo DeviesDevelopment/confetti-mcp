@@ -2,6 +2,7 @@ import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import nock from 'nock'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { ErrorCode } from '@modelcontextprotocol/sdk/types.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { createApp } from '../../src/server/app.js'
 import { loadConfig } from '../../src/config.js'
@@ -87,15 +88,151 @@ test('an upstream failure comes back as an isError result, not a protocol error'
   server.close()
 })
 
-test('an unknown tool name returns an isError result', async () => {
+test('an unknown tool name is a protocol error, not a tool result', async () => {
+  // The spec names "Unknown tools" as its canonical -32602, and clients key on
+  // it to refresh a stale tool list or drop a hallucinated name. An isError
+  // result instead feeds "Unknown tool" back to the model, which retries
+  // variations of it.
   const { server, port } = await startServer()
   const { client, transport } = await connect(port)
 
-  const result = await client.callTool({ name: 'confetti_nope_find', arguments: {} })
-  assert.equal(result.isError, true)
+  await assert.rejects(
+    () => client.callTool({ name: 'confetti_nope_find', arguments: {} }),
+    (error: unknown) => {
+      assert.equal((error as { code?: number }).code, ErrorCode.InvalidParams)
+      assert.match((error as Error).message, /confetti_nope_find/)
+      return true
+    },
+  )
 
   await transport.close()
   server.close()
+})
+
+test('the connection ships instructions, scoped to the tools it actually has', async () => {
+  const { server, port } = await startServer()
+  const { client, transport } = await connect(port, '/mcp?resources=events')
+
+  const instructions = client.getInstructions()
+  assert.ok(instructions && instructions.length > 0, 'ServerOptions.instructions went unused')
+  assert.match(instructions, /Confetti/)
+  assert.ok(!/tickets/i.test(instructions), 'a scoped connection must not be oriented around tools it lacks')
+
+  await transport.close()
+  server.close()
+})
+
+test('tool results are compact JSON, not pretty-printed', async () => {
+  // Indentation was ~19% of every read response, paid on every call.
+  const { server, port } = await startServer()
+  nock(API)
+    .get('/events')
+    .query(true)
+    .reply(200, { data: [{ id: '1', type: 'events', attributes: { name: 'DevSummit' } }] }, { 'content-type': 'application/json' })
+
+  const { client, transport } = await connect(port)
+  const result = await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+  const content = result.content as Array<{ type: string; text: string }>
+
+  assert.match(content[0]!.text, /DevSummit/)
+  assert.ok(!content[0]!.text.includes('\n'), 'a tool result must not carry indentation')
+
+  await transport.close()
+  server.close()
+})
+
+test('a failed tool call is logged as one structured line, without key, args or message', async () => {
+  const { server, port } = await startServer()
+  nock(API)
+    .get('/events/999')
+    .query(true)
+    .reply(404, { message: 'Event not found for key sk_test_key' }, { 'content-type': 'application/json' })
+
+  const lines: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  // Intercept the stream, not console.*: a logger added later writes here.
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+    return original(chunk as string, ...(rest as []))
+  }) as typeof process.stderr.write
+
+  try {
+    const { client, transport } = await connect(port)
+    await client.callTool({ name: 'confetti_events_find', arguments: { id: '999' } })
+    await transport.close()
+  } finally {
+    process.stderr.write = original
+  }
+  server.close()
+
+  const logged = lines.join('').trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
+  const failure = logged.find((entry) => entry.msg === 'tool_call_failed')
+  assert.ok(failure, `expected a tool_call_failed line, got ${JSON.stringify(logged)}`)
+  assert.equal(failure.tool, 'confetti_events_find')
+  assert.equal(failure.error, 'NotFoundError')
+  assert.equal(typeof failure.durationMs, 'number')
+  assert.equal(typeof failure.requestId, 'string')
+
+  const all = lines.join('')
+  assert.ok(!all.includes('sk_test_key'), 'the api key must never reach a log')
+  assert.ok(!all.includes('999'), 'tool arguments must never reach a log')
+  assert.ok(!all.includes('Event not found'), 'an error message can carry caller data and must not be logged')
+})
+
+test('an upstream 5xx is logged with its status, so an incident is visible', async () => {
+  const { server, port } = await startServer()
+  nock(API).get('/events').query(true).reply(503, 'upstream down for sk_test_key')
+
+  const lines: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+    return original(chunk as string, ...(rest as []))
+  }) as typeof process.stderr.write
+
+  try {
+    const { client, transport } = await connect(port)
+    await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+    await transport.close()
+  } finally {
+    process.stderr.write = original
+  }
+  server.close()
+
+  const failure = lines
+    .join('')
+    .trim()
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => JSON.parse(line))
+    .find((entry) => entry.msg === 'tool_call_failed')
+
+  assert.ok(failure, 'expected a failure line')
+  assert.equal(failure.upstreamStatus, 503, 'error name alone cannot tell an outage from a bad argument')
+  assert.ok(!lines.join('').includes('sk_test_key'), 'the api key must never reach a log')
+})
+
+test('a successful tool call logs nothing', async () => {
+  const { server, port } = await startServer()
+  nock(API).get('/events').query(true).reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  const lines: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string | Uint8Array, ...rest: unknown[]): boolean => {
+    lines.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8'))
+    return original(chunk as string, ...(rest as []))
+  }) as typeof process.stderr.write
+
+  try {
+    const { client, transport } = await connect(port)
+    await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+    await transport.close()
+  } finally {
+    process.stderr.write = original
+  }
+  server.close()
+
+  assert.equal(lines.join('').trim(), '', 'the success path stays silent — this is a per-request-key server')
 })
 
 test('a filtered-out tool is refused when called, not merely hidden from the list', async () => {
@@ -221,6 +358,169 @@ test('concurrent connections do not leak api keys across requests', async () => 
 
   await a.transport.close()
   await b.transport.close()
+  server.close()
+})
+
+test('two concurrent connections never see each other records', async () => {
+  // The single most security-relevant invariant this server has, and the one
+  // the audit found evidence against: `confetti`'s adapter deserialised every
+  // response through ONE module-level yayson Store that is never reset, and
+  // yayson resolves a linkage-only relationship by scanning every record any
+  // earlier request in the process synced. Tenant B references workspace 5 and
+  // ships no `included` block for it, so under a shared Store B's response is
+  // completed from tenant A's workspace 5 — a cross-tenant disclosure on a
+  // deployment whose whole design claim is per-request statelessness.
+  //
+  // Both calls are genuinely in flight together; B's response is delayed only
+  // so that A's deserialisation is guaranteed to have happened first, which is
+  // the ordering the bleed needs.
+  const { server, port } = await startServer()
+
+  nock(API, { reqheaders: { authorization: 'apikey tenant-a-key' } })
+    .get('/events/1')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '1',
+          type: 'events',
+          attributes: { name: 'Tenant A offsite' },
+          relationships: { workspace: { data: { id: '5', type: 'workspaces' } } },
+        },
+        included: [
+          {
+            id: '5',
+            type: 'workspaces',
+            attributes: { name: 'Tenant A Workspace', internalNote: 'A-only-data' },
+          },
+        ],
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  nock(API, { reqheaders: { authorization: 'apikey tenant-b-key' } })
+    .get('/events/2')
+    .query(true)
+    .delay(60)
+    .reply(
+      200,
+      {
+        data: {
+          id: '2',
+          type: 'events',
+          attributes: { name: 'Tenant B kickoff' },
+          // Same (type, id) as tenant A's workspace, and no `included` block:
+          // the precondition for the bleed.
+          relationships: { workspace: { data: { id: '5', type: 'workspaces' } } },
+        },
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  const a = await connect(port, '/mcp', { authorization: 'Bearer tenant-a-key' })
+  const b = await connect(port, '/mcp', { authorization: 'Bearer tenant-b-key' })
+
+  const [resultA, resultB] = await Promise.all([
+    a.client.callTool({ name: 'confetti_events_find', arguments: { id: '1' } }),
+    b.client.callTool({ name: 'confetti_events_find', arguments: { id: '2' } }),
+  ])
+
+  const textOf = (result: { content?: unknown }) =>
+    (result.content as Array<{ text: string }>)[0]!.text
+
+  // The fixture has to be real: A must actually receive its own included
+  // workspace, or B "not seeing it" would prove nothing.
+  const forA = textOf(resultA)
+  assert.match(forA, /Tenant A Workspace/, "tenant A did not receive its own included record")
+  assert.match(forA, /A-only-data/)
+
+  const forB = textOf(resultB)
+  assert.match(forB, /Tenant B kickoff/, 'tenant B did not receive its own record')
+  assert.doesNotMatch(forB, /Tenant A Workspace/, "tenant A's workspace bled into tenant B's response")
+  assert.doesNotMatch(forB, /A-only-data/, "tenant A's private attribute bled into tenant B's response")
+
+  await a.transport.close()
+  await b.transport.close()
+  server.close()
+})
+
+test('a later connection never inherits an earlier one records', async () => {
+  // The sequential half of the same invariant: a store that is never reset
+  // keeps every record for the life of the process, so the bleed does not need
+  // concurrency — only that tenant A called first, at any point since boot.
+  const { server, port } = await startServer()
+
+  nock(API, { reqheaders: { authorization: 'apikey tenant-c-key' } })
+    .get('/events/3')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '3',
+          type: 'events',
+          attributes: { name: 'Tenant C summit' },
+          relationships: { workspace: { data: { id: '7', type: 'workspaces' } } },
+        },
+        included: [{ id: '7', type: 'workspaces', attributes: { name: 'Tenant C Workspace' } }],
+      },
+      { 'content-type': 'application/json' },
+    )
+  nock(API, { reqheaders: { authorization: 'apikey tenant-d-key' } })
+    .get('/events/4')
+    .query(true)
+    .reply(
+      200,
+      {
+        data: {
+          id: '4',
+          type: 'events',
+          attributes: { name: 'Tenant D summit' },
+          relationships: { workspace: { data: { id: '7', type: 'workspaces' } } },
+        },
+      },
+      { 'content-type': 'application/json' },
+    )
+
+  const c = await connect(port, '/mcp', { authorization: 'Bearer tenant-c-key' })
+  await c.client.callTool({ name: 'confetti_events_find', arguments: { id: '3' } })
+  await c.transport.close()
+
+  const d = await connect(port, '/mcp', { authorization: 'Bearer tenant-d-key' })
+  const resultD = await d.client.callTool({ name: 'confetti_events_find', arguments: { id: '4' } })
+  const text = (resultD.content as Array<{ text: string }>)[0]!.text
+
+  assert.match(text, /Tenant D summit/)
+  assert.doesNotMatch(text, /Tenant C Workspace/, "a closed connection's records must not survive into the next")
+
+  await d.transport.close()
+  server.close()
+})
+
+test('an upstream error that echoes the caller key never reaches the client', async () => {
+  // Redaction of the caller's own key exists only because mcp.ts passes it to
+  // toolErrorMessage as the third argument — deleting that argument leaves the
+  // function working, and left every test green. The key here is deliberately
+  // NOT `sk_`-shaped, so the shape regex cannot save it: exact-matching the
+  // connection's own key is the only thing standing between an upstream that
+  // echoes it and the model's transcript.
+  const key = 'tenant-alpha-9f3c'
+  const { server, port } = await startServer()
+  nock(API)
+    .get('/events')
+    .query(true)
+    .reply(401, `Invalid credentials for apikey ${key}`, { 'content-type': 'text/plain' })
+
+  const { client, transport } = await connect(port, '/mcp', { authorization: `Bearer ${key}` })
+  const result = await client.callTool({ name: 'confetti_events_find_all', arguments: {} })
+
+  assert.equal(result.isError, true)
+  const text = (result.content as Array<{ text: string }>)[0]!.text
+  assert.ok(!text.includes(key), `the caller's api key reached the client: ${text}`)
+  assert.match(text, /\[redacted\]/, 'the key must be redacted, not merely absent by luck')
+
+  await transport.close()
   server.close()
 })
 

@@ -33,6 +33,31 @@ export const RESOURCE_MAP = {
 
 export type ModelKey = keyof typeof RESOURCE_MAP
 
+/**
+ * How to enumerate a resource that has no list tool of its own: the `include`
+ * path that side-loads it from its event. Seven resources (form, formField,
+ * speaker, organiser, scheduleItem, sponsor, sponsorLevel) have no `findAll`,
+ * and without this a model asked to "list the speakers" finds no tool, calls
+ * `events_find` with no `include`, and concludes there are none.
+ *
+ * Only paths that really exist on `Confetti.models.event.includes` belong here
+ * — test/confetti/resource-map.ts asserts exactly that, so an upstream rename
+ * fails the build rather than sending models down a dead path. sponsor and
+ * sponsorLevel are absent from every include and are deliberately not listed:
+ * their ids can only come from a create response.
+ */
+export const INCLUDE_PATHS = {
+  speaker: 'speakers',
+  organiser: 'organisers',
+  scheduleItem: 'schedule-items',
+  form: 'forms.form-fields',
+  formField: 'forms.form-fields',
+} as const satisfies Partial<Record<ModelKey, string>>
+
+export function includePathFor(modelKey: ModelKey): string | undefined {
+  return (INCLUDE_PATHS as Partial<Record<ModelKey, string>>)[modelKey]
+}
+
 export const OPERATIONS = ['findAll', 'find', 'create', 'update', 'delete'] as const
 export type Operation = (typeof OPERATIONS)[number]
 
