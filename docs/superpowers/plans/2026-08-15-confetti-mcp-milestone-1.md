@@ -320,7 +320,16 @@ git commit -m "feat: project scaffold with health endpoint"
 
 **Interfaces:**
 - Consumes: nothing.
-- Produces: `extractApiKey(req: { headers: Record<string, unknown>; params?: Record<string, string> }): string | undefined`.
+- Produces: `extractApiKey(req: { headers: Record<string, unknown>; params?: Record<string, string>; query?: Record<string, unknown> }): string | undefined`.
+
+Four carriers, in precedence order: `Authorization: Bearer`, `X-Api-Key`,
+`?apiKey=`, then the `:apiKey` path segment. The two URL-carried fallbacks exist
+because Claude Desktop's chat surface and claude.ai web use the custom-connector
+UI, which accepts only a URL plus optional OAuth credentials — no headers.
+Desktop's Code tab reads `.mcp.json` and handles headers natively.
+
+A present-but-malformed `Authorization` header returns `undefined` rather than
+falling through; an empty value in any other carrier falls through to the next.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -343,16 +352,40 @@ test('reads X-Api-Key header', () => {
   assert.equal(extractApiKey({ headers: { 'x-api-key': 'sk_xyz' } }), 'sk_xyz')
 })
 
+test('reads apiKey query parameter', () => {
+  assert.equal(extractApiKey({ headers: {}, query: { apiKey: 'sk_query' } }), 'sk_query')
+})
+
 test('reads apiKey path param', () => {
   assert.equal(extractApiKey({ headers: {}, params: { apiKey: 'sk_path' } }), 'sk_path')
 })
 
-test('Authorization wins over X-Api-Key and path', () => {
+test('Authorization wins over X-Api-Key, query, and path', () => {
   const key = extractApiKey({
     headers: { authorization: 'Bearer sk_header', 'x-api-key': 'sk_alias' },
+    query: { apiKey: 'sk_query' },
     params: { apiKey: 'sk_path' },
   })
   assert.equal(key, 'sk_header')
+})
+
+test('X-Api-Key wins over the query parameter', () => {
+  const key = extractApiKey({ headers: { 'x-api-key': 'sk_alias' }, query: { apiKey: 'sk_query' } })
+  assert.equal(key, 'sk_alias')
+})
+
+test('query parameter wins over the path param', () => {
+  const key = extractApiKey({ headers: {}, query: { apiKey: 'sk_query' }, params: { apiKey: 'sk_path' } })
+  assert.equal(key, 'sk_query')
+})
+
+test('a repeated apiKey query parameter takes the first value', () => {
+  assert.equal(extractApiKey({ headers: {}, query: { apiKey: ['sk_one', 'sk_two'] } }), 'sk_one')
+})
+
+test('an empty apiKey query parameter falls through to the path param', () => {
+  const key = extractApiKey({ headers: {}, query: { apiKey: '  ' }, params: { apiKey: 'sk_path' } })
+  assert.equal(key, 'sk_path')
 })
 
 test('X-Api-Key wins over path', () => {
@@ -388,6 +421,7 @@ Expected: FAIL — cannot find module `../../src/server/auth.js`.
 export interface ApiKeyCarrier {
   headers: Record<string, unknown>
   params?: Record<string, string>
+  query?: Record<string, unknown>
 }
 
 function firstString(value: unknown): string | undefined {
@@ -404,21 +438,26 @@ function clean(value: string | undefined): string | undefined {
 /**
  * Extracts the caller's Confetti API key.
  *
- * Precedence: Authorization: Bearer, then X-Api-Key, then the :apiKey path
- * segment. The path form exists only for clients that cannot set headers and
- * is documented as discouraged.
+ * Precedence: Authorization: Bearer, then X-Api-Key, then ?apiKey=, then the
+ * :apiKey path segment. The two URL-carried forms exist for clients that cannot
+ * set headers — Claude Desktop's chat surface and claude.ai web both use the
+ * custom-connector UI, which accepts only a URL and optional OAuth credentials.
+ * Both are documented as second-class.
  */
 export function extractApiKey(req: ApiKeyCarrier): string | undefined {
   const authorization = clean(firstString(req.headers['authorization']))
   if (authorization) {
+    // A present but malformed Authorization header is an error, not an
+    // invitation to try a weaker carrier.
     const match = /^Bearer[ ]+(.+)$/i.exec(authorization)
-    const token = clean(match?.[1])
-    if (token) return token
-    return undefined
+    return clean(match?.[1])
   }
 
   const alias = clean(firstString(req.headers['x-api-key']))
   if (alias) return alias
+
+  const query = clean(firstString(req.query?.['apiKey']))
+  if (query) return query
 
   return clean(req.params?.['apiKey'])
 }
@@ -427,7 +466,7 @@ export function extractApiKey(req: ApiKeyCarrier): string | undefined {
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `node --import=tsx --test test/server/auth.ts`
-Expected: 10 tests PASS.
+Expected: 15 tests PASS.
 
 - [ ] **Step 5: Commit**
 
@@ -1882,7 +1921,11 @@ export function createApp(config: Config): express.Express {
   })
 
   const handleMcp: express.RequestHandler = async (req, res) => {
-    const apiKey = extractApiKey({ headers: req.headers as Record<string, unknown>, params: req.params })
+    const apiKey = extractApiKey({
+      headers: req.headers as Record<string, unknown>,
+      params: req.params,
+      query: req.query as Record<string, unknown>,
+    })
     if (!apiKey) {
       res.status(401).set('WWW-Authenticate', 'Bearer').json({
         jsonrpc: '2.0',
@@ -1947,21 +1990,29 @@ git commit -m "feat: stateless MCP server over streamable HTTP"
 
 ---
 
-### Task 10: Path-based API key fallback
+### Task 10: URL-carried API key fallbacks
 
 **Files:**
 - Modify: `src/server/app.ts`
-- Test: `test/server/path-auth.ts`
+- Test: `test/server/url-auth.ts`
 
 **Interfaces:**
 - Consumes: everything from Task 9.
-- Produces: the route `POST /mcp/k/:apiKey`.
+- Produces: the route `POST /mcp/k/:apiKey`. The `?apiKey=` carrier needs no new route — Task 9's `handleMcp` already passes `req.query` to `extractApiKey`.
 
-This exists only for clients that cannot set headers (the claude.ai web connector). The key lands in the URL, so this route must never be logged.
+These exist for clients that cannot set headers. Claude Desktop's **Code tab**
+reads `.mcp.json` and handles headers natively, so it needs neither; Claude
+Desktop's **chat** surface and claude.ai web use the custom-connector UI, whose
+only fields are the server URL plus optional OAuth client id and secret. Those
+clients must put the key in the URL.
+
+The key lands in the URL either way, so neither route may ever be logged. This
+task must also prove that an `apiKey` in the query string does not disturb the
+`?ops=` / `?resources=` tool filtering that shares the same query object.
 
 - [ ] **Step 1: Write the failing test**
 
-Create `test/server/path-auth.ts`:
+Create `test/server/url-auth.ts`:
 
 ```ts
 import { test, afterEach } from 'node:test'
@@ -2009,6 +2060,30 @@ test('the path route honours the ops filter', async () => {
   server.close()
 })
 
+test('the query carrier authenticates without a header', async () => {
+  const { server, port } = await startServer()
+  const res = await rpc(port, '/mcp?apiKey=sk_query_key')
+  assert.equal(res.status, 200)
+  server.close()
+})
+
+test('an apiKey in the query does not disturb tool filtering', async () => {
+  const { server, port } = await startServer()
+  const res = await rpc(port, '/mcp?apiKey=sk_query_key&ops=read')
+  assert.equal(res.status, 200)
+  const text = await res.text()
+  const listed = (text.match(/"name":"confetti_/g) ?? []).length
+  assert.equal(listed, 29, 'apiKey must be ignored by parseToolFilter, not rejected as an unknown key')
+  server.close()
+})
+
+test('an unknown query parameter is still ignored rather than rejected', async () => {
+  const { server, port } = await startServer()
+  const res = await rpc(port, '/mcp?apiKey=sk_query_key&utm_source=docs')
+  assert.equal(res.status, 200)
+  server.close()
+})
+
 test('the api key never appears in stdout or stderr', async () => {
   const { server, port } = await startServer()
   const captured: string[] = []
@@ -2034,7 +2109,7 @@ test('the api key never appears in stdout or stderr', async () => {
 
 - [ ] **Step 2: Run test to verify it fails**
 
-Run: `node --import=tsx --test test/server/path-auth.ts`
+Run: `node --import=tsx --test test/server/url-auth.ts`
 Expected: FAIL — the `/mcp/k/:apiKey` route returns 404.
 
 - [ ] **Step 3: Register the route in `src/server/app.ts`**
@@ -2052,8 +2127,8 @@ Add immediately after the existing `app.post('/mcp', handleMcp)` line:
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `node --import=tsx --test test/server/path-auth.ts`
-Expected: 3 tests PASS.
+Run: `node --import=tsx --test test/server/url-auth.ts`
+Expected: 6 tests PASS.
 
 - [ ] **Step 5: Run the whole suite**
 
@@ -2064,7 +2139,7 @@ Expected: all tests PASS.
 
 ```bash
 git add -A
-git commit -m "feat: path-based api key fallback for header-less clients"
+git commit -m "feat: url-carried api key fallbacks for header-less clients"
 ```
 
 ---
@@ -2385,14 +2460,45 @@ helper and retries once, so a rotated key heals without restarting the session.
 aliases (`get`, `post`, `put`, `patch`, `delete`). `read` covers both `find` and
 `find_all`.
 
+## Connect from Claude Desktop
+
+Which setup you need depends on the surface:
+
+**Code tab** — reads `~/.claude.json`, `.mcp.json`, and
+`claude_desktop_config.json`, so it supports headers exactly like the CLI. Use
+any of the configurations above; nothing extra is needed.
+
+**Chat surface** (and claude.ai web) — these use the custom connector UI, whose
+only fields are the server URL and, under Advanced settings, an OAuth client id
+and secret. There is no way to send a header, so put the key in the URL:
+
+```
+https://your-host/mcp?apiKey=YOUR_CONFETTI_API_KEY
+```
+
+Add it under Settings → Connectors → Add custom connector. Filters still work:
+
+```
+https://your-host/mcp?apiKey=YOUR_CONFETTI_API_KEY&ops=read
+```
+
+Prefer a header wherever the client allows one. A key in a URL is visible in
+browser history, proxy logs, and anything that records request lines — the URL
+forms exist because these two surfaces cannot do better, not because the
+tradeoff is even.
+
 ## Authentication
 
 In precedence order:
 
 1. `Authorization: Bearer <key>` — recommended.
 2. `X-Api-Key: <key>` — alias.
-3. `POST /mcp/k/<key>` — fallback for clients that cannot set headers, such as
-   the claude.ai web connector UI. Discouraged: the key ends up in the URL.
+3. `?apiKey=<key>` — URL fallback, for clients that cannot set headers.
+4. `POST /mcp/k/<key>` — the other URL fallback, for clients or proxies that
+   handle a path segment better than a query parameter.
+
+A malformed `Authorization` header is rejected rather than falling through to a
+weaker carrier. An empty value in carriers 2–4 falls through to the next.
 
 ## Self-hosting
 
