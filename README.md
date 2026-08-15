@@ -165,7 +165,21 @@ curl https://your-host/
 # {"status":"ok","server":"confetti-mcp","version":"0.1.0","usage":"POST /mcp with an \"Authorization: Bearer <confetti-api-key>\" header."}
 ```
 
-The image's own `HEALTHCHECK` uses this endpoint.
+The image's own `HEALTHCHECK` uses this endpoint, so plain Docker and compose
+restart a wedged container without any extra configuration.
+
+**Managed platforms ignore the Dockerfile `HEALTHCHECK`** and probe a path you
+configure instead — point them at `/`. On Azure App Service for Containers that
+is the separate **Health check** feature (Settings → Health check → path `/`),
+which is off by default: without it a container that is listening but wedged is
+never restarted, and Always On only keeps it warm. The equivalents elsewhere:
+
+| Platform | Setting |
+| --- | --- |
+| Azure App Service | Health check path `/` |
+| AWS ECS / ALB | Target group health check path `/` |
+| Kubernetes | `livenessProbe.httpGet.path: /` |
+| Docker / compose | Nothing to configure — the image's `HEALTHCHECK` is used |
 
 The server never reads an API key from its own environment — keys always come
 from the caller.
