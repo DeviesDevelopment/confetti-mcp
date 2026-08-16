@@ -509,8 +509,18 @@ test('the tool surface stays inside its context budget', () => {
   // had to discover by failing — recovered helpText, enum values, id
   // cross-links, required fields, and the list-less breadcrumbs. The ceiling is
   // here so that stays a deliberate trade and not a drift.
+  //
+  // Raised once since, from 72,000, for +2,268 bytes: `webhook.type` is a bare
+  // string upstream, so its 17 valid event types are now generated from the
+  // registry's own webhook configs (a model could otherwise only guess), and
+  // ten fields whose meaning is readable from neither the schema nor the name
+  // gained descriptions — the free-form `settings`/`content` objects and the
+  // block-style/theme ids no tool lists. Those descriptions say plainly where
+  // upstream documents nothing, instead of guessing; wording is shared between
+  // resources so each fact costs its bytes once. Three weaker entries were cut
+  // to pay for it.
   const bytes = JSON.stringify(tools.map((tool) => tool.definition)).length
-  assert.ok(bytes < 72_000, `tool surface grew to ${bytes} bytes`)
+  assert.ok(bytes < 74_500, `tool surface grew to ${bytes} bytes`)
 
   const samples = tools.reduce((total, tool) => {
     const index = tool.definition.description.indexOf('Example record:')

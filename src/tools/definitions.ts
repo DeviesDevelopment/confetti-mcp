@@ -250,9 +250,36 @@ function collapseDateUnion(property: Schema): void {
  * Fill-gaps-only: an upstream `description` always wins, and the recovered text
  * is only ever added where there was nothing.
  */
+/**
+ * Every webhook event type the registry knows about, gathered from the
+ * `webhooks` array each model carries.
+ *
+ * `webhook.type` is declared upstream as a bare string, so nothing in the
+ * schema tells a caller that only these 17 values are accepted — but the
+ * registry states them, one model at a time. Generating the enum keeps it
+ * correct as upstream adds events, where a hand-written list would rot.
+ */
+function webhookEventTypes(): string[] {
+  const registry = Confetti.models as unknown as Record<string, ModelDefinition>
+  const types = new Set<string>()
+  for (const model of Object.values(registry)) {
+    for (const hook of model.webhooks ?? []) types.add(hook.type)
+  }
+  return [...types].sort()
+}
+
 function enrichFromZodMeta(modelKey: ModelKey, shape: Schema | undefined, json: Schema): void {
   const properties = json['properties']
   if (!isRecord(properties)) return
+
+  // Only `webhook.type`: the values live in the registry rather than the schema.
+  if (modelKey === 'webhook') {
+    const type = properties['type']
+    if (isRecord(type) && type['enum'] === undefined && type['type'] === 'string') {
+      const types = webhookEventTypes()
+      if (types.length > 0) type['enum'] = types
+    }
+  }
 
   for (const [field, node] of Object.entries(properties)) {
     if (!isRecord(node)) continue

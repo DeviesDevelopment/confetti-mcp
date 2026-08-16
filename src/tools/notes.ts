@@ -57,10 +57,40 @@ export const NOTES: Partial<Record<ModelKey, Partial<Record<NoteScope, string>>>
  * description), so a model that followed it sent answers under a key that is
  * dropped, and the ticket was created with no form answers and no error.
  */
+/** Shared wording, so repeating a fact across resources costs bytes once here. */
+const FREE_FORM =
+  'Free-form object: keys are neither documented nor validated upstream. Read an existing record for the shape in use.'
+
+const NO_LISTING_TOOL = (thing: string): string =>
+  `Numeric ${thing} id. No tool lists ${thing}s — copy one from an existing record that has it.`
+
 export const FIELD_DESCRIPTIONS: Partial<Record<ModelKey, Record<string, string>>> = {
   ticket: {
     values:
       'Form field answers, keyed by each field\'s name (e.g. {"dietary-needs": "Vegan"}). Field names come from confetti_form_fields_find; titles and ids are not accepted, and answers sent under any other argument are ignored.',
+  },
+
+  // Fields whose meaning cannot be read off the schema or the name. Where the
+  // accepted values are genuinely undocumented these say so rather than
+  // guessing — a confident invented description is what makes a model fail
+  // silently, which is the bug this table exists to fix. Kept terse on purpose:
+  // every byte here ships in every session's context.
+  image: {
+    type: 'Image kind. Upstream documents no accepted values; copy one from an existing image rather than inventing it.',
+    url: 'Fetch the image from this URL. Alternative to base64.',
+    base64: 'Inline image data. Alternative to url.',
+    content: FREE_FORM,
+    blockStyleId: NO_LISTING_TOOL('block style'),
+    themeId: NO_LISTING_TOOL('theme'),
+  },
+  block: {
+    blockStyleId: NO_LISTING_TOOL('block style'),
+  },
+  page: {
+    settings: FREE_FORM,
+  },
+  formField: {
+    settings: FREE_FORM,
   },
 }
 
