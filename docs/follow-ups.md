@@ -47,18 +47,42 @@ context and left them deferred; that judgement still holds.
   `--experimental-test-module-mocks`, which printed an ExperimentalWarning on
   every run of all 319 tests to cover four lines, and staked the suite on an API
   Node says may change. A named export was the cheaper seam.
-- `ID_SCHEMA` and `PAGE_SCHEMA` are shared by reference across tools rather than
-  cloned. Inert today; `Object.freeze` would make it stay that way.
-- `annotate()` uses `===` comparisons rather than an exhaustive switch, so a new
-  upstream operation would silently get default annotations instead of the compile
-  error `schemaFor`/`describe` correctly produce.
-- Sample records embed pretty-printed rather than compact.
-- `withoutId` is copy-then-delete because the eslint config lacks
-  `ignoreRestSiblings`.
-- `req.params` uses an `as unknown as` double-cast, safe because `/mcp` has no
-  path parameters, but it wants a comment saying so.
-- README orders self-hosting after client setup, though it is a prerequisite.
-- `/mcp` GET/DELETE returning 405 is undocumented.
+- ~~`ID_SCHEMA` and `PAGE_SCHEMA` are shared by reference across tools rather
+  than cloned~~ — **done.** Both are now `Object.freeze`d (`PAGE_SCHEMA` deeply,
+  since it nests `properties`), so accidental mutation throws instead of
+  silently corrupting every tool that shares the object. A test pins that two
+  tools' `id`/`page` schemas are the literal same object and that mutating
+  either throws.
+- ~~`annotate()` uses `===` comparisons rather than an exhaustive switch~~ —
+  **done.** Converted to the same switch shape as `schemaFor`/`describe`.
+  Verified by temporarily adding a bogus operation to the `Operation` union:
+  `annotate()` now fails with the same TS2366 ("lacks ending return statement")
+  that `schemaFor` already produced, where it previously compiled silently.
+- ~~Sample records embed pretty-printed rather than compact~~ — **done**,
+  already, as of the schema-and-descriptions fix earlier the same day
+  (`b1487f78`): `sampleOf` (renamed from `sampleFor`) uses compact
+  `JSON.stringify`, and the context-budget test's accounting comment already
+  reflects it (6,353 sample bytes, ceiling 7,000). This bullet was stale —
+  struck through rather than reworked, since there was no remaining code or
+  comment to change.
+- ~~`withoutId` is copy-then-delete because the eslint config lacks
+  `ignoreRestSiblings`~~ — **done.** Added `ignoreRestSiblings: true` and
+  switched `withoutId` to `const { id, ...rest } = args`.
+- ~~`req.params` uses an `as unknown as` double-cast, safe because `/mcp` has no
+  path parameters, but it wants a comment saying so~~ — **done**, with a
+  correction: `handleMcp` also serves `/mcp/k/:apiKey`, which *does* have a
+  path parameter, so "safe because `/mcp` has no path parameters" was not
+  quite right. The cast is sound for a different reason: neither route
+  declares a wildcard/splat segment, so every named param (including
+  `:apiKey`) is always a single string at runtime, never the `string[]`
+  Express 5's `ParamsDictionary` type allows for. The comment in `app.ts`
+  states that.
+- ~~README orders self-hosting after client setup, though it is a
+  prerequisite~~ — **done.** Moved Self-hosting directly after "How it works",
+  ahead of both "Connect from..." sections. The "see below" pointer in "How it
+  works" stays accurate since Self-hosting is now the next section.
+- ~~`/mcp` GET/DELETE returning 405 is undocumented~~ — **done.** Documented in
+  "How it works", next to the statelessness explanation it follows from.
 - The arm64 image is built under QEMU and executed by nobody. Native
   `ubuntu-24.04-arm` runners would make releases faster and actually test it.
 - `ci.yml` and `release.yml` duplicate the smoke-test body verbatim.
