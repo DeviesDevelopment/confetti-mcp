@@ -72,7 +72,7 @@ helper and retries once, so a rotated key heals without restarting the session.
 
 ## Trimming the tool surface
 
-The full tool list — all 63 tools — serialises to roughly 71 KB of JSON, about
+The full tool list — all 63 tools — serialises to roughly 73 KB of JSON, about
 20,000 tokens of context spent before you've asked anything. Narrow it per
 connection with query parameters on the connect URL:
 

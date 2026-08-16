@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.2.3 — 2026-08-16
+
+### Fixed
+
+- **Array filters returned HTTP 500.** `filter: { status: ['attending'] }` was
+  serialised as `filter[status][0]=attending`, which the Confetti API rejects.
+  The generated schemas advertise `status` as an array of enum, so the tools
+  were instructing callers to send precisely the shape that fails — reported
+  from a real client. Array filter values are now joined into the comma list the
+  API accepts (`filter[status]=attending,waitlist`, which genuinely ORs). The
+  schemas still take an array; only the wire representation changed.
+  Affects `confetti_tickets_find_all` and `confetti_payments_find_all`.
+  Filed upstream as confetti/confetti-node#37.
+
+## 0.2.2 — 2026-08-16
+
+### Added
+
+- `webhook.type` now advertises its 17 valid event types. Upstream declares it a
+  bare string, but the registry states the values, so the enum is generated from
+  it and stays correct as events are added.
+- Descriptions for ten fields whose meaning is readable from neither the schema
+  nor the name — the free-form `settings`/`content` objects and the block-style
+  and theme ids no tool lists. Where upstream documents nothing these say so
+  rather than guessing.
+
+### Changed
+
+- The design doc now describes the deployment that exists rather than a private
+  deploy repo that was planned and never built.
+
+## 0.2.1 — 2026-08-16
+
+No user-facing change. Deployment moved from a Docker Hub webhook to an Azure
+OIDC federated credential: the webhook URL embedded App Service publishing
+credentials that also granted shell access, stored outside any secret manager.
+Releases now deploy an exact version tag rather than following `latest`, and
+verify the running app reports it.
+
 ## 0.2.0 — 2026-08-15
 
 Security and agent-experience release, driven by two multi-agent reviews: a defect
