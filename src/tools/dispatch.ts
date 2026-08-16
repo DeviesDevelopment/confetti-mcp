@@ -103,8 +103,7 @@ function pageInfo(page: AnyArgs): PageInfo {
 }
 
 function withoutId(args: AnyArgs): AnyArgs {
-  const rest = { ...args }
-  delete rest['id']
+  const { id, ...rest } = args
   return rest
 }
 

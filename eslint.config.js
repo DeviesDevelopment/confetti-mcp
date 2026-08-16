@@ -14,7 +14,10 @@ export default [
     rules: {
       ...tseslint.configs.recommended.rules,
       '@typescript-eslint/no-explicit-any': 'error',
-      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
+      '@typescript-eslint/no-unused-vars': [
+        'error',
+        { argsIgnorePattern: '^_', ignoreRestSiblings: true },
+      ],
       // TypeScript (via `tsc --noEmit`, also run by `npm run lint`) already catches genuine
       // undefined-variable errors and understands ambient/TS-only globals (NodeJS, fetch, etc.)
       // that base ESLint's no-undef does not. Disabling it here avoids false positives.
