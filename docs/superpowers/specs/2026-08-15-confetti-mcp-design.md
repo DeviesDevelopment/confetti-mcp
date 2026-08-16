@@ -49,23 +49,38 @@ Docker Hub credentials are the one secret here: a scoped access token stored as 
 repository secret. Fork PRs cannot read it (GitHub default), and the publish job
 is gated on tag pushes, not PRs.
 
-### `DeviesDevelopment/confetti-mcp-deploy` — private, deferred
+### Deployment — superseded: no second repo
 
-**Not in the current scope.** The first milestone ends at a working image
-published to Docker Hub; hosting is decided after that lands and the server has
-been exercised by `docker run`.
+A private `confetti-mcp-deploy` repo was planned, to keep Azure resource names
+and topology out of a public build chain. It was never created, and is no longer
+the plan.
 
-When it happens: Bicep for the Azure App Service, custom domain, and app
-settings; plus a deploy workflow that pins an image tag and rolls it out via
-Azure OIDC federated credentials (the same mechanism KleerMCP already uses — no
-stored passwords). Release is `gh workflow run deploy.yml -f tag=v1.2.0` from the
-private repo. No cross-repo token is needed in either direction. Resource names,
-topology, and deploy logs never become public.
+Two things made it unnecessary. The image is public and already built, so the
+deploy side builds nothing — it only says "run version X here", which is a
+handful of values, not a repository. And every one of those values is a GitHub
+secret, so the public workflow describes the *shape* of a deployment while naming
+no instance.
 
-Nothing in the public repo assumes Azure, so deferring this costs nothing later.
+**How it actually works.** A `deploy` job in `release.yml` runs after the image is
+published. It authenticates to Azure with a short-lived OIDC token — a
+user-assigned managed identity with a federated credential trusting this repo's
+`production` environment, holding `Website Contributor` on the one web app. It
+then pins the App Service to the exact version just published and fails the
+release if the running app does not report that version.
 
-This mirrors the standard shape for open-source products with a privately-hosted
-instance (Sentry, Cal.com, PostHog, Supabase all split this way).
+**What this replaced, and why.** The first attempt used a Docker Hub webhook. That
+required enabling SCM basic auth, which also grants Kudu console access — a shell
+on the container — and the webhook URL embedding those credentials lived in Docker
+Hub, outside any secret manager. Docker Hub write access was effectively shell
+access. Basic auth is now disabled and the webhook removed.
+
+Two properties are worth keeping if this is ever revisited: deploys pin an exact
+version rather than following a mutable tag, so a rogue push to `latest` cannot
+reach production; and the deploy verifies the rollout, where the webhook deployed
+silently and checked nothing.
+
+Nothing in the repo assumes Azure — the identity and the resource names are all
+supplied at deploy time — so another host is a change to one job.
 
 ## 2. Runtime architecture
 
