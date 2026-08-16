@@ -24,7 +24,7 @@ on:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     permissions:
       contents: read
     steps:
@@ -70,8 +70,11 @@ jobs:
           tags: confetti-mcp:smoke
           # `load` exports to the docker daemon, which cannot carry attestations.
           provenance: false
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Its own scope. This build is amd64-only, so sharing a scope with the
+          # multi-arch push lets its mode=max export evict the arm64 layers —
+          # which turned a 2-minute release into a 30-minute timeout once.
+          cache-from: type=gha,scope=smoke-amd64
+          cache-to: type=gha,mode=max,scope=smoke-amd64
 
       # Keep in sync with the identical step in ci.yml.
       - name: Smoke-test the image
@@ -148,8 +151,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=release-multiarch
+          cache-to: type=gha,mode=max,scope=release-multiarch
 
   # Deploy is a separate job so the image is published even if the rollout fails,
   # and so it can be re-run alone. It authenticates with a short-lived OIDC token
