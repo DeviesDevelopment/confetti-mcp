@@ -3,6 +3,16 @@ name: Release
 on:
   push:
     tags: ['v*']
+  # Nothing else exercises this workflow, so an action bump here is unverified
+  # until the next real release — which is also the thing that deploys to
+  # production. A dry run does everything except authenticate and push, so a
+  # dependency update can be proven on a branch before it is trusted with a tag.
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Build and smoke-test only; do not log in or push'
+        type: boolean
+        default: true
 
 # Every action is pinned to a full commit SHA: this job holds DOCKERHUB_TOKEN,
 # and a Docker Hub webhook auto-deploys whatever it pushes, so a force-pushed
@@ -26,6 +36,7 @@ jobs:
           cache: npm
 
       - name: Verify tag matches package.json version
+        if: github.ref_type == 'tag'
         run: |
           TAG="${GITHUB_REF_NAME#v}"
           PKG="$(node -p "require('./package.json').version")"
@@ -108,12 +119,14 @@ jobs:
       # Deliberately after the smoke test: a build that never boots must never
       # get as far as authenticating to the registry.
       - name: Log in to Docker Hub
+        if: ${{ !inputs.dry_run }}
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - name: Derive image tags
+        if: ${{ !inputs.dry_run }}
         id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5.10.0
         with:
@@ -127,6 +140,7 @@ jobs:
       # the amd64 layers published here are the ones that just booted. The
       # arm64 variant is still built under QEMU and never executed.
       - name: Build and push
+        if: ${{ !inputs.dry_run }}
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
         with:
           context: .
