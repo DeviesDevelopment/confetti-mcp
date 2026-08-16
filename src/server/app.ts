@@ -45,6 +45,40 @@ function methodNotAllowed(_req: express.Request, res: express.Response): void {
   })
 }
 
+/**
+ * Turns any error escaping a route into a JSON-RPC document.
+ *
+ * Exported so it can be tested directly: no HTTP request can reach the generic
+ * 500 branch, because `extractApiKey` and `getToolSet` are total over their
+ * inputs and every other fault is classified by `clientFault`. Reaching it
+ * through the server would need module mocking behind an experimental Node
+ * flag, which would print a warning on every test run forever to cover four
+ * lines. A named export is the cheaper seam.
+ */
+export const errorHandler: express.ErrorRequestHandler = (error, _req, res, next) => {
+  // A response already on the wire cannot be replaced with an error document;
+  // express's default handler destroys the connection instead.
+  if (res.headersSent) {
+    next(error)
+    return
+  }
+
+  const requestId = String(res.locals['requestId'] ?? newRequestId())
+  const name = error instanceof Error ? error.name : typeof error
+  const fault = clientFault(error)
+
+  if (fault) {
+    logEvent('warn', 'bad_request', { requestId, name, status: fault.status })
+    res.status(fault.status).json({ jsonrpc: '2.0', error: { code: fault.code, message: fault.message }, id: null })
+    return
+  }
+
+  // Never the message or the url: the /mcp/k/<key> carrier puts the caller's
+  // key in the path, and an error message can quote the request body.
+  logEvent('error', 'unhandled', { requestId, name, status: 500 })
+  res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error.' }, id: null })
+}
+
 export function createApp(config: Config): express.Express {
   const app = express()
 
@@ -129,29 +163,7 @@ export function createApp(config: Config): express.Express {
     res.status(404).json({ jsonrpc: '2.0', error: { code: -32601, message: 'Not found. Use POST /mcp.' }, id: null })
   })
 
-  app.use(((error, _req, res, next) => {
-    // A response already on the wire cannot be replaced with an error document;
-    // express's default handler destroys the connection instead.
-    if (res.headersSent) {
-      next(error)
-      return
-    }
-
-    const requestId = String(res.locals['requestId'] ?? newRequestId())
-    const name = error instanceof Error ? error.name : typeof error
-    const fault = clientFault(error)
-
-    if (fault) {
-      logEvent('warn', 'bad_request', { requestId, name, status: fault.status })
-      res.status(fault.status).json({ jsonrpc: '2.0', error: { code: fault.code, message: fault.message }, id: null })
-      return
-    }
-
-    // Never the message or the url: the /mcp/k/<key> carrier puts the caller's
-    // key in the path, and an error message can quote the request body.
-    logEvent('error', 'unhandled', { requestId, name, status: 500 })
-    res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal server error.' }, id: null })
-  }) as express.ErrorRequestHandler)
+  app.use(errorHandler)
 
   return app
 }

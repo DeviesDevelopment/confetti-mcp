@@ -1,6 +1,6 @@
 import { test, type TestContext } from 'node:test'
 import assert from 'node:assert/strict'
-import { createApp } from '../../src/server/app.js'
+import { createApp, errorHandler } from '../../src/server/app.js'
 import { loadConfig } from '../../src/config.js'
 
 async function startServer(t: TestContext) {
@@ -89,47 +89,57 @@ test('the discovery response advertises the filters that shrink the tool surface
   assert.match(usage, /\?resources=/)
 })
 
-test('a non-ToolFilterError thrown while handling a request is answered generically, without the url or a key', async (t) => {
-  // The 500 branch of the error middleware is distinct from the ToolFilterError
-  // 400 branch and from every 4xx `clientFault` branch: it is reached only when
-  // something inside `handleMcp` throws unexpectedly after the tool-filter
-  // check has already passed. Nothing reachable purely through crafted HTTP
-  // input takes that path — `extractApiKey` and `getToolSet` are total
-  // functions over their inputs — so the only way to exercise it without
-  // editing src/ is to mock `createMcpServer` for the duration of this test via
-  // node's built-in module mocking, forcing exactly the kind of error class
-  // (TypeError, not ToolFilterError) this branch exists to handle safely.
-  const KEY = 'sk_secret_500_path_test_key'
-  const mcpReal = await import('../../src/server/mcp.js')
-  const mock = t.mock.module('../../src/server/mcp.js', {
-    namedExports: {
-      ...mcpReal,
-      createMcpServer: () => {
-        throw new TypeError('forced failure to reach the 500 path')
-      },
+/**
+ * The generic 500 branch is unreachable over HTTP — `extractApiKey` and
+ * `getToolSet` are total over their inputs, and every other fault is
+ * classified as a client fault first. Calling the exported handler directly
+ * covers it without module mocking behind an experimental flag.
+ */
+function fakeResponse() {
+  const sent: { status?: number; body?: unknown } = {}
+  const res = {
+    headersSent: false,
+    locals: {} as Record<string, unknown>,
+    status(code: number) {
+      sent.status = code
+      return this
     },
+    json(payload: unknown) {
+      sent.body = payload
+      return this
+    },
+  }
+  return { res, sent }
+}
+
+test('an unclassified error becomes a generic 500 that echoes nothing', () => {
+  const { res, sent } = fakeResponse()
+  const KEY = 'sk_live_should_never_appear'
+  const boom = new TypeError(`upstream blew up for /mcp/k/${KEY}?ops=read`)
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  errorHandler(boom, { originalUrl: `/mcp/k/${KEY}` } as any, res as any, () => {
+    assert.fail('next() must not be called when headers are unsent')
   })
-  t.after(() => mock.restore())
 
-  // A fresh, cache-busted import: the module already loaded at the top of this
-  // file resolved its `createMcpServer` binding against the real mcp.js before
-  // the mock above existed, so it would still call the real implementation.
-  const { createApp: createMockedApp } = (await import(
-    `../../src/server/app.js?bust=${Date.now()}`
-  )) as typeof import('../../src/server/app.js')
-  const app = createMockedApp(loadConfig({}))
-  const server = app.listen(0)
-  await new Promise((resolve) => server.once('listening', resolve))
-  t.after(() => { server.close() })
-  const { port } = server.address() as { port: number }
+  assert.equal(sent.status, 500)
+  const body = JSON.stringify(sent.body)
+  assert.match(body, /-32603/)
+  assert.match(body, /Internal server error/)
+  assert.ok(!body.includes(KEY), `the api key reached the response body: ${body}`)
+  assert.ok(!body.includes('blew up'), 'the error message must not reach the client')
+  assert.ok(!body.includes('/mcp/k/'), 'the request url must not reach the client')
+})
 
-  const res = await post(port, JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }), `/mcp/k/${KEY}`)
+test('an error after headers are sent is handed back to express', () => {
+  const { res } = fakeResponse()
+  res.headersSent = true
+  let handedOff = false
 
-  assert.equal(res.status, 500)
-  assert.equal(res.body.error?.code, -32603)
-  assert.equal(res.body.error?.message, 'Internal server error.')
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  errorHandler(new Error('late'), {} as any, res as any, () => {
+    handedOff = true
+  })
 
-  const raw = JSON.stringify(res.body)
-  assert.ok(!raw.includes(KEY), 'the 500 body must never include the caller key')
-  assert.ok(!raw.includes('/mcp/k/'), 'the 500 body must never echo the request url')
+  assert.ok(handedOff, 'a response already on the wire must fall through to express')
 })

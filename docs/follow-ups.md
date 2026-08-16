@@ -35,15 +35,18 @@ tool family.
 None of these are on fire. The final review triaged them with whole-branch
 context and left them deferred; that judgement still holds.
 
-- **Tests leak a listening handle on failure.** They call `server.close()` after
-  assertions with no `try/finally`, so a throwing assertion skips cleanup and the
-  runner hangs. `--test-force-exit` in the `test` script masks the symptom. The
-  root fix is `t.after(() => server.close())` across the suite — mechanical, ~12
-  files. **This is the first follow-up to do**, because the flag will also hide a
-  genuine async-handle leak in server code later.
-- **The 500 error-handler path has no test.** Four lines, verified correct by
-  reading, but a future edit could widen it to echo `error.message` without
-  anything failing.
+- ~~Tests leak a listening handle on failure~~ — **done.** Converted to
+  `t.after(() => server.close())` across all four server test files and removed
+  `--test-force-exit`. A failing test now exits 1 in ~3s with the failure
+  reported, where it previously hung indefinitely.
+- ~~The 500 error-handler path has no test~~ — **done.** No HTTP request can
+  reach that branch (`extractApiKey` and `getToolSet` are total over their
+  inputs, and everything else is classified as a client fault first), so the
+  handler is exported as `errorHandler` and tested directly. An attempt via
+  node's module mocking was reverted: it required
+  `--experimental-test-module-mocks`, which printed an ExperimentalWarning on
+  every run of all 319 tests to cover four lines, and staked the suite on an API
+  Node says may change. A named export was the cheaper seam.
 - `ID_SCHEMA` and `PAGE_SCHEMA` are shared by reference across tools rather than
   cloned. Inert today; `Object.freeze` would make it stay that way.
 - `annotate()` uses `===` comparisons rather than an exhaustive switch, so a new
