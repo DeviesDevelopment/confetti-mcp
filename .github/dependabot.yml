@@ -2,6 +2,10 @@ version: 2
 
 # The base image is pinned by digest and every action by commit SHA, which trades
 # drift for staleness. These keep the pins moving without giving that trade back.
+#
+# Tuned after the first run opened seven PRs at once, of which two could not land:
+# a Node 22 -> 26 base-image jump two majors past what `engines` declares, and a
+# grouped dev bump that dragged in TypeScript 7 and broke the eslint peer range.
 updates:
   - package-ecosystem: github-actions
     directory: /
@@ -9,6 +13,11 @@ updates:
       interval: weekly
     commit-message:
       prefix: 'ci'
+    # One PR, not five. These actions all appear in release.yml, which no CI run
+    # exercises — reviewing them together is the only way to reason about that path.
+    groups:
+      actions:
+        patterns: ['*']
 
   - package-ecosystem: docker
     directory: /
@@ -16,6 +25,12 @@ updates:
       interval: weekly
     commit-message:
       prefix: 'build'
+    # Patch and minor keep the digest current within the pinned major. Moving the
+    # Node major is a runtime decision that needs its own testing, and would
+    # contradict `engines: >=22.12.0` and .nvmrc until those move first.
+    ignore:
+      - dependency-name: node
+        update-types: ['version-update:semver-major']
 
   - package-ecosystem: npm
     directory: /
@@ -26,3 +41,6 @@ updates:
     groups:
       dev-dependencies:
         dependency-type: development
+        # TypeScript majors must move with the eslint toolchain that peers on them;
+        # grouped in blindly they fail `npm ci` before any test runs.
+        exclude-patterns: ['typescript']
