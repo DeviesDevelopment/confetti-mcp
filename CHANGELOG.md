@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.2.4 — 2026-08-16
+
+No user-facing change: internal hardening and documentation.
+
+### Changed
+
+- A failing test now fails instead of hanging. Tests closed their server as the
+  last statement of the body, so a throwing assertion skipped cleanup and leaked
+  the listening handle; `--test-force-exit` masked it. Cleanup runs via
+  `t.after`, the flag is gone, and a deliberate failure exits in ~3s.
+- The shared `id` and `page` schema objects are frozen. They are assigned by
+  reference into every tool that uses them, so a future per-tool patch would
+  otherwise have silently altered all of them.
+- `annotate()` is an exhaustive switch over `Operation`, matching `schemaFor`
+  and `describe`. A new upstream operation now breaks the build rather than
+  silently defaulting a destructive tool to non-destructive.
+- README documents the `405` responses on `GET`/`DELETE /mcp`, and self-hosting
+  now precedes the client-setup sections it is a prerequisite for.
+
 ## 0.2.3 — 2026-08-16
 
 ### Fixed
