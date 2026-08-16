@@ -565,20 +565,34 @@ const TITLE_VERBS: Record<Operation, string> = {
   delete: 'Delete',
 }
 
+/**
+ * An exhaustive switch, matching `schemaFor`/`describe` above: adding an
+ * upstream `Operation` without a case here fails the build, rather than
+ * silently falling through to whatever a `===` chain's default happened to
+ * produce. That matters more here than anywhere else in this file — the
+ * worst default for an unrecognised operation is non-destructive,
+ * non-idempotent, which is exactly the annotation a genuinely destructive
+ * new operation must never get by accident.
+ */
 function annotate(m: ModelDefinition, modelKey: ModelKey, operation: Operation): ToolAnnotations {
-  const readOnly = operation === 'find' || operation === 'findAll'
   const subject = operation === 'findAll' ? humanWords(RESOURCE_MAP[modelKey]) : m.name
-  return {
-    // A human title, not the machine name: hosts show this in approval dialogs
-    // and tool pickers, where `confetti_sponsor_levels_delete` is noise.
-    title: `${TITLE_VERBS[operation]} ${subject}`,
-    readOnlyHint: readOnly,
-    // Every tool talks to one closed API. The spec's default is `true`, which
-    // would claim these calls could reach anywhere.
-    openWorldHint: false,
-    ...(operation === 'delete' ? { destructiveHint: true } : {}),
-    ...(operation === 'update' || operation === 'delete' ? { idempotentHint: true } : {}),
-    ...(operation === 'create' ? { destructiveHint: false } : {}),
+  // A human title, not the machine name: hosts show this in approval dialogs
+  // and tool pickers, where `confetti_sponsor_levels_delete` is noise.
+  const title = `${TITLE_VERBS[operation]} ${subject}`
+  // Every tool talks to one closed API. The spec's default is `true`, which
+  // would claim these calls could reach anywhere.
+  const openWorldHint = false
+
+  switch (operation) {
+    case 'findAll':
+    case 'find':
+      return { title, readOnlyHint: true, openWorldHint }
+    case 'create':
+      return { title, readOnlyHint: false, openWorldHint, destructiveHint: false }
+    case 'update':
+      return { title, readOnlyHint: false, openWorldHint, idempotentHint: true }
+    case 'delete':
+      return { title, readOnlyHint: false, openWorldHint, destructiveHint: true, idempotentHint: true }
   }
 }
 
