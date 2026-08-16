@@ -3,10 +3,11 @@ import assert from 'node:assert/strict'
 import { createApp } from '../../src/server/app.js'
 import { loadConfig } from '../../src/config.js'
 
-test('GET / reports server identity', async () => {
+test('GET / reports server identity', async (t) => {
   const app = createApp(loadConfig({}))
   const server = app.listen(0)
   await new Promise((resolve) => server.once('listening', resolve))
+  t.after(() => { server.close() })
   const { port } = server.address() as { port: number }
 
   const res = await fetch(`http://127.0.0.1:${port}/`)
@@ -17,8 +18,6 @@ test('GET / reports server identity', async () => {
   assert.equal(body.server, 'confetti-mcp')
   assert.equal(typeof body.version, 'string')
   assert.match(body.usage, /Authorization: Bearer/)
-
-  server.close()
 })
 
 test('loadConfig applies defaults', () => {
