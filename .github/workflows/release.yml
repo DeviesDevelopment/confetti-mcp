@@ -150,3 +150,60 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Deploy is a separate job so the image is published even if the rollout fails,
+  # and so it can be re-run alone. It authenticates with a short-lived OIDC token
+  # bound to this repo's `production` environment — there is no standing
+  # credential anywhere, which is the point: the previous Docker Hub webhook
+  # embedded App Service publishing credentials that also granted Kudu shell
+  # access, stored outside any secret manager.
+  #
+  # Every identifier is a secret, so nothing here names the instance. They are
+  # masked in logs; the endpoint is publicly reachable by design, so this stops
+  # the repo advertising it rather than making it private.
+  deploy:
+    needs: publish
+    if: ${{ !inputs.dry_run }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: production
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Authenticate to Azure
+        uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      # Pin the exact version just published, never `latest`: the app stops
+      # following a mutable tag, so a rogue push to `latest` cannot deploy.
+      - name: Deploy the published image
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          az webapp config container set \
+            --resource-group "${{ secrets.AZURE_RESOURCE_GROUP }}" \
+            --name "${{ secrets.AZURE_WEBAPP_NAME }}" \
+            --container-image-name "deviesdevelopment/confetti-mcp:$VERSION" \
+            --output none
+          echo "requested rollout of $VERSION"
+
+      # A webhook deploy was invisible and unverified. Fail the release if the
+      # running app never reports the version it was told to run.
+      - name: Verify the rollout
+        run: |
+          set -euo pipefail
+          VERSION="${GITHUB_REF_NAME#v}"
+          for _ in $(seq 1 40); do
+            RUNNING="$(curl -fsS -m 10 "${{ secrets.AZURE_WEBAPP_URL }}/" 2>/dev/null | jq -r .version 2>/dev/null || echo '')"
+            if [ "$RUNNING" = "$VERSION" ]; then
+              echo "rollout confirmed: running $VERSION"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "rollout not confirmed after 10 minutes; last reported version: '$RUNNING'"
+          exit 1
