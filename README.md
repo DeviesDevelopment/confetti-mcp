@@ -12,12 +12,79 @@ events, tickets, contacts, pages, and payments directly.
 transport. You supply your own Confetti API key on each connection; the server
 stores no credentials and holds no per-user state.
 
+Because there is no session, `GET /mcp` and `DELETE /mcp` — the
+streamable-http verbs for resuming or closing one — return `405`: there is
+nothing to resume and nothing to delete. Use `POST /mcp` for everything.
+
 Tools are generated at startup from the `confetti` client's model registry, so
 the tool surface tracks the API rather than being hand-maintained.
 
 There's no hosted instance — self-hosting (see below) is the supported way to
 run it today. `https://your-host` in the examples below stands for wherever
 you deploy it.
+
+## Self-hosting
+
+```bash
+docker run -p 8080:8080 deviesdevelopment/confetti-mcp
+```
+
+> Published from the first tagged release onward. Until then, build it locally
+> with the commands below.
+
+Or build the image from the `Dockerfile` in this repo:
+
+```bash
+docker build -t confetti-mcp .
+docker run -p 8080:8080 confetti-mcp
+```
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `PORT` | `8080` | Listen port |
+| `CONFETTI_API_HOST` | `api.confetti.events` | Upstream API host |
+| `CONFETTI_API_PROTOCOL` | `https` | Upstream protocol |
+| `LOG_LEVEL` | `info` | Accepted but not yet wired to log output; reserved |
+
+`GET /` is an unauthenticated health endpoint, suitable for a load balancer or
+container probe. It reports the server name and version and touches nothing
+upstream:
+
+```bash
+curl https://your-host/
+# {"status":"ok","server":"confetti-mcp","version":"0.2.0","usage":"POST /mcp with an \"Authorization: Bearer <confetti-api-key>\" header.","filtering":"All 63 tools are exposed by default. Narrow the connection with ?ops= and ?resources= ..."}
+```
+
+The image's own `HEALTHCHECK` uses this endpoint, so plain Docker and compose
+restart a wedged container without any extra configuration.
+
+### Logs
+
+The server writes one structured JSON line to **stderr** per failed tool call and
+per rejected request — request id, tool name, error class, upstream status class,
+and duration. It deliberately never logs the API key, the tool arguments, the
+request URL, or the error message, because all four can carry caller data and the
+URL carriers put the key in the path or query string. A regression test asserts
+the key never reaches any output channel through any carrier
+(`test/server/no-key-in-logs.ts`).
+
+Successful calls are not logged at all.
+
+**Managed platforms ignore the Dockerfile `HEALTHCHECK`** and probe a path you
+configure instead — point them at `/`. On Azure App Service for Containers that
+is the separate **Health check** feature (Settings → Health check → path `/`),
+which is off by default: without it a container that is listening but wedged is
+never restarted, and Always On only keeps it warm. The equivalents elsewhere:
+
+| Platform | Setting |
+| --- | --- |
+| Azure App Service | Health check path `/` |
+| AWS ECS / ALB | Target group health check path `/` |
+| Kubernetes | `livenessProbe.httpGet.path: /` |
+| Docker / compose | Nothing to configure — the image's `HEALTHCHECK` is used |
+
+The server never reads an API key from its own environment — keys always come
+from the caller.
 
 ## Connect from Claude Code
 
@@ -132,69 +199,6 @@ In precedence order:
 
 A malformed `Authorization` header is rejected rather than falling through to a
 weaker carrier. An empty value in carriers 2–4 falls through to the next.
-
-## Self-hosting
-
-```bash
-docker run -p 8080:8080 deviesdevelopment/confetti-mcp
-```
-
-> Published from the first tagged release onward. Until then, build it locally
-> with the commands below.
-
-Or build the image from the `Dockerfile` in this repo:
-
-```bash
-docker build -t confetti-mcp .
-docker run -p 8080:8080 confetti-mcp
-```
-
-| Variable | Default | Purpose |
-| --- | --- | --- |
-| `PORT` | `8080` | Listen port |
-| `CONFETTI_API_HOST` | `api.confetti.events` | Upstream API host |
-| `CONFETTI_API_PROTOCOL` | `https` | Upstream protocol |
-| `LOG_LEVEL` | `info` | Accepted but not yet wired to log output; reserved |
-
-`GET /` is an unauthenticated health endpoint, suitable for a load balancer or
-container probe. It reports the server name and version and touches nothing
-upstream:
-
-```bash
-curl https://your-host/
-# {"status":"ok","server":"confetti-mcp","version":"0.2.0","usage":"POST /mcp with an \"Authorization: Bearer <confetti-api-key>\" header.","filtering":"All 63 tools are exposed by default. Narrow the connection with ?ops= and ?resources= ..."}
-```
-
-The image's own `HEALTHCHECK` uses this endpoint, so plain Docker and compose
-restart a wedged container without any extra configuration.
-
-### Logs
-
-The server writes one structured JSON line to **stderr** per failed tool call and
-per rejected request — request id, tool name, error class, upstream status class,
-and duration. It deliberately never logs the API key, the tool arguments, the
-request URL, or the error message, because all four can carry caller data and the
-URL carriers put the key in the path or query string. A regression test asserts
-the key never reaches any output channel through any carrier
-(`test/server/no-key-in-logs.ts`).
-
-Successful calls are not logged at all.
-
-**Managed platforms ignore the Dockerfile `HEALTHCHECK`** and probe a path you
-configure instead — point them at `/`. On Azure App Service for Containers that
-is the separate **Health check** feature (Settings → Health check → path `/`),
-which is off by default: without it a container that is listening but wedged is
-never restarted, and Always On only keeps it warm. The equivalents elsewhere:
-
-| Platform | Setting |
-| --- | --- |
-| Azure App Service | Health check path `/` |
-| AWS ECS / ALB | Target group health check path `/` |
-| Kubernetes | `livenessProbe.httpGet.path: /` |
-| Docker / compose | Nothing to configure — the image's `HEALTHCHECK` is used |
-
-The server never reads an API key from its own environment — keys always come
-from the caller.
 
 ## Development
 
