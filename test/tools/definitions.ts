@@ -138,6 +138,73 @@ test('exactly 10 tools are marked destructive', () => {
   assert.equal(destructive.length, 10)
 })
 
+test('annotations are exactly the fields for their operation, not a superset', () => {
+  assert.deepEqual(definition('confetti_events_find').annotations, {
+    title: 'Get Event',
+    readOnlyHint: true,
+    openWorldHint: false,
+  })
+  assert.deepEqual(definition('confetti_events_find_all').annotations, {
+    title: 'List Events',
+    readOnlyHint: true,
+    openWorldHint: false,
+  })
+  assert.deepEqual(definition('confetti_events_create').annotations, {
+    title: 'Create Event',
+    readOnlyHint: false,
+    openWorldHint: false,
+    destructiveHint: false,
+  })
+  assert.deepEqual(definition('confetti_events_update').annotations, {
+    title: 'Update Event',
+    readOnlyHint: false,
+    openWorldHint: false,
+    idempotentHint: true,
+  })
+  assert.deepEqual(definition('confetti_pages_delete').annotations, {
+    title: 'Delete Page',
+    readOnlyHint: false,
+    openWorldHint: false,
+    destructiveHint: true,
+    idempotentHint: true,
+  })
+})
+
+test('the shared id and page schemas are frozen against accidental mutation', () => {
+  // ID_SCHEMA and PAGE_SCHEMA are assigned by reference into every tool that
+  // uses them, so two unrelated tools' `id` properties are the literal same
+  // object — demonstrated here, not just asserted about internals.
+  const eventsId = props('confetti_events_find')['id'] as Record<string, unknown>
+  const pagesId = props('confetti_pages_find')['id'] as Record<string, unknown>
+  assert.equal(eventsId, pagesId, 'id schema must be shared by reference across tools')
+  assert.ok(Object.isFrozen(eventsId), 'the shared id schema must be frozen')
+  assert.throws(() => {
+    ;(eventsId as { type: string }).type = 'number'
+  }, TypeError)
+
+  const eventsPage = props('confetti_events_find_all')['page'] as Record<string, unknown>
+  const contactsPage = props('confetti_contacts_find_all')['page'] as Record<string, unknown>
+  assert.equal(eventsPage, contactsPage, 'page schema must be shared by reference across tools')
+  assert.ok(Object.isFrozen(eventsPage), 'the shared page schema must be frozen')
+  assert.throws(() => {
+    ;(eventsPage as { description: string }).description = 'tampered'
+  }, TypeError)
+
+  // Deep freeze: the nested `properties` object, and the property objects
+  // inside it, must also reject mutation — a shallow freeze would leave them
+  // open.
+  const pageProperties = eventsPage['properties'] as Record<string, unknown>
+  assert.ok(Object.isFrozen(pageProperties), 'page.properties must be frozen')
+  assert.throws(() => {
+    ;(pageProperties as { size: unknown }).size = { type: 'string' }
+  }, TypeError)
+  const pageSize = pageProperties['size'] as Record<string, unknown>
+  assert.ok(Object.isFrozen(pageSize), 'page.properties.size must be frozen')
+  assert.throws(() => {
+    ;(pageSize as { type: string }).type = 'string'
+  }, TypeError)
+})
+
 test('update tools require only id, never the body schema required fields', () => {
   for (const tool of tools) {
     if (tool.operation !== 'update') continue

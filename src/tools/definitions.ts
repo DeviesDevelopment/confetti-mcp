@@ -41,6 +41,26 @@ export interface GeneratedTool {
 
 type Schema = Record<string, unknown>
 
+function isRecord(value: unknown): value is Schema {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+/**
+ * `ID_SCHEMA` and `PAGE_SCHEMA` below are assigned by reference into every
+ * tool that uses them (~39 tools share `ID_SCHEMA`, 11 share `PAGE_SCHEMA`).
+ * Nothing mutates them today, but any future per-tool schema patching would
+ * silently corrupt every other tool that shares the object. Freezing turns
+ * that mistake into a thrown TypeError instead of silent cross-tool
+ * corruption. `Object.freeze` is shallow, so nested objects (`PAGE_SCHEMA.properties`
+ * and each property within it) are walked and frozen too.
+ */
+function deepFreeze<T>(value: T): T {
+  if (isRecord(value)) {
+    for (const child of Object.values(value)) deepFreeze(child)
+  }
+  return Object.freeze(value)
+}
+
 /**
  * A single type, not `['string','number']`. The union is legal JSON Schema but
  * it is the one construct strict consumers refuse: ajv's strict mode will not
@@ -48,12 +68,12 @@ type Schema = Record<string, unknown>
  * parameter's typing or the whole tool. Numeric ids still work — they are
  * stringified into a URL path — so the fact is stated in prose instead.
  */
-const ID_SCHEMA = {
+const ID_SCHEMA = deepFreeze({
   type: 'string',
   description: 'Record id. A number is accepted too.',
-}
+})
 
-const PAGE_SCHEMA = {
+const PAGE_SCHEMA = deepFreeze({
   type: 'object',
   description: `JSON:API pagination. Defaults to a page size of ${DEFAULT_PAGE_SIZE}; sizes above ${MAX_PAGE_SIZE} are capped.`,
   properties: {
@@ -62,14 +82,10 @@ const PAGE_SCHEMA = {
     offset: { type: 'number' },
     limit: { type: 'number' },
   },
-}
+})
 
 const DATE_DESCRIPTION =
   'ISO 8601 date or date-time, e.g. "2026-09-01" or "2026-09-01T18:00:00Z".'
-
-function isRecord(value: unknown): value is Schema {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-}
 
 function model(modelKey: ModelKey): ModelDefinition {
   return (Confetti.models as unknown as Record<ModelKey, ModelDefinition>)[modelKey]
