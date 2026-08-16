@@ -106,6 +106,11 @@ export function createApp(config: Config): express.Express {
   const handleMcp: express.RequestHandler = async (req, res) => {
     const apiKey = extractApiKey({
       headers: req.headers as Record<string, unknown>,
+      // Sound: neither route this handler serves (`/mcp`, `/mcp/k/:apiKey`)
+      // declares a wildcard/splat segment, so every named param — including
+      // `:apiKey` — is always a single string at runtime. Express 5 types
+      // `ParamsDictionary` values as `string | string[]` only to account for
+      // wildcard matches, hence the detour through `unknown`.
       params: req.params as unknown as Record<string, string>,
       query: req.query as Record<string, unknown>,
     })
