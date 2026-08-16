@@ -140,11 +140,35 @@ export const CALLER_OPTION_KEYS = {
   delete: [],
 } as const satisfies Record<Operation, readonly string[]>
 
+/**
+ * Collapses an array filter value to the comma list the API actually accepts.
+ *
+ * `confetti` serialises options with `qs.stringify` and no `arrayFormat`, so an
+ * array filter goes out as `filter[status][0]=attending`. Verified against the
+ * live API: that form returns **HTTP 500** on `/tickets`, while
+ * `filter[status]=attending` succeeds and `filter[status]=waitlist,attending`
+ * genuinely ORs the two (25 records, where `waitlist` alone returns 0 — so it
+ * is a union, not first-value-only).
+ *
+ * The tool schemas keep advertising an array, which is the right shape for a
+ * caller to reason about; only the wire representation changes. Confetti's
+ * filter enums contain no commas, so joining is lossless.
+ */
+function commaJoinFilters(filter: unknown): unknown {
+  if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) return filter
+  const out: AnyArgs = {}
+  for (const [key, value] of Object.entries(filter as AnyArgs)) {
+    out[key] = Array.isArray(value) ? value.join(',') : value
+  }
+  return out
+}
+
 export function callerOptions(operation: Operation, args: AnyArgs): AnyArgs {
   const options: AnyArgs = {}
   for (const key of CALLER_OPTION_KEYS[operation]) {
     const value = args[key]
-    if (value !== undefined) options[key] = value
+    if (value === undefined) continue
+    options[key] = key === 'filter' ? commaJoinFilters(value) : value
   }
   return options
 }

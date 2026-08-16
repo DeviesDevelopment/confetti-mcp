@@ -533,3 +533,44 @@ test('the raw response flag cannot be set from tool arguments', async () => {
   assert.equal(records[0]!.name, 'Kickoff')
   scope.done()
 })
+
+test('an array filter goes out as a comma list, not indexed keys', async () => {
+  // Verified against the live API: filter[status][0]=attending returns HTTP 500
+  // on /tickets, while filter[status]=attending succeeds. qs.stringify has no
+  // arrayFormat upstream, so the array must be collapsed before it gets there.
+  const scope = nock(API)
+    .get('/tickets')
+    .query((q) => q['filter[status]'] === 'attending,waitlist' && q['filter[status][0]'] === undefined)
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  await callTool(
+    tool('confetti_tickets_find_all'),
+    { filter: { eventId: 141404, status: ['attending', 'waitlist'] } },
+    context,
+  )
+  scope.done()
+})
+
+test('a single-element array filter is still sent as a bare value', async () => {
+  const scope = nock(API)
+    .get('/tickets')
+    .query((q) => q['filter[status]'] === 'attending')
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  await callTool(
+    tool('confetti_tickets_find_all'),
+    { filter: { eventId: 141404, status: ['attending'] } },
+    context,
+  )
+  scope.done()
+})
+
+test('non-array filter values are untouched', async () => {
+  const scope = nock(API)
+    .get('/tickets')
+    .query((q) => q['filter[eventId]'] === '141404')
+    .reply(200, { data: [] }, { 'content-type': 'application/json' })
+
+  await callTool(tool('confetti_tickets_find_all'), { filter: { eventId: 141404 } }, context)
+  scope.done()
+})
